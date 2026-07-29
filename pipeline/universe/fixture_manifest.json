@@ -1,0 +1,65 @@
+{
+  "manifest_version": "1",
+  "_note": "The 50-security engineering fixture. This file decides WHICH securities are in the fixture and WHY. Names, CIKs, SIC codes and instrument types are resolved from SEC and Nasdaq Trader at load time - never typed in here. Every ticker below was confirmed to exist in live SEC company_tickers.json and/or the Nasdaq Trader directory files on 2026-07-29 before being added.",
+  "_delisted_date_meaning": "For delisted entries, delisted_date records the first UTC date this pipeline observed the symbol absent from both exchange directory files. It is an observation date, not the official exchange delisting date, which these two sources do not publish.",
+  "securities": [
+    { "symbol": "AAPL", "category": "ordinary", "inclusion_reason": "Mega-cap technology hardware. Deepest-liquidity baseline case for every downstream calculation." },
+    { "symbol": "MSFT", "category": "ordinary", "inclusion_reason": "Mega-cap enterprise software. Profitable, stable, wide analyst coverage." },
+    { "symbol": "META", "category": "ordinary", "inclusion_reason": "Mega-cap internet platform. Class A common stock of a founder-controlled issuer." },
+    { "symbol": "AMZN", "category": "ordinary", "inclusion_reason": "Mega-cap e-commerce and cloud. SIC 5961 retail-catalog despite being cloud-heavy, so it tests industry labelling against business reality." },
+    { "symbol": "AVGO", "category": "ordinary", "inclusion_reason": "Mega-cap semiconductor, SIC 3674. AI networking and custom silicon exposure alongside the analog exposure from TXN." },
+    { "symbol": "JNJ", "category": "ordinary", "inclusion_reason": "Mega-cap pharmaceutical and medical device. Long dividend history." },
+    { "symbol": "PG", "category": "ordinary", "inclusion_reason": "Consumer staples. Low realised volatility baseline." },
+    { "symbol": "HD", "category": "ordinary", "inclusion_reason": "Big-box retail. Housing-cycle sensitivity." },
+    { "symbol": "CAT", "category": "ordinary", "inclusion_reason": "Industrial machinery. Deep cyclical with global end markets." },
+    { "symbol": "DE", "category": "ordinary", "inclusion_reason": "Agricultural machinery. Cyclical driven by farm income rather than construction." },
+    { "symbol": "UNP", "category": "ordinary", "inclusion_reason": "Class I railroad. Capital-intensive with regulated characteristics." },
+    { "symbol": "LMT", "category": "ordinary", "inclusion_reason": "Defence prime contractor. Revenue concentrated in government contracts." },
+    { "symbol": "ADP", "category": "ordinary", "inclusion_reason": "Payroll and HR services. Steady recurring margin profile." },
+    { "symbol": "CSCO", "category": "ordinary", "inclusion_reason": "Networking hardware. Mature technology with large buyback programme." },
+    { "symbol": "TXN", "category": "ordinary", "inclusion_reason": "Analog semiconductors. Long product cycles, high gross margin." },
+    { "symbol": "MRK", "category": "ordinary", "inclusion_reason": "Large-cap pharmaceutical. Exchange name is 'Common Stock (new)', a parser edge case for the classifier." },
+    { "symbol": "PEP", "category": "ordinary", "inclusion_reason": "Beverages and snacks. Defensive consumer exposure." },
+    { "symbol": "KO", "category": "ordinary", "inclusion_reason": "Beverages. Concentrate model with heavy international revenue." },
+    { "symbol": "MCD", "category": "ordinary", "inclusion_reason": "Restaurants. Franchise and real-estate economics rather than operating restaurants." },
+    { "symbol": "COST", "category": "ordinary", "inclusion_reason": "Membership retail. Thin product margin, membership-fee profit." },
+    { "symbol": "LIN", "category": "ordinary", "inclusion_reason": "Industrial gases, Irish plc. Exchange name is 'Ordinary Shares', not 'Common Stock', so it tests the non-US naming path." },
+    { "symbol": "HON", "category": "ordinary", "inclusion_reason": "Diversified industrial conglomerate spanning aerospace and automation." },
+    { "symbol": "TJX", "category": "ordinary", "inclusion_reason": "Off-price retail. Counter-cyclical retail characteristics." },
+    { "symbol": "ORLY", "category": "ordinary", "inclusion_reason": "Auto parts retail. No dividend, buyback-heavy capital return, so per-share metrics move on share count." },
+
+    { "symbol": "JPM", "category": "bank", "inclusion_reason": "Money-centre bank, SIC 6021 National Commercial Banks confirmed from SEC submissions. Bank accounting breaks generic ratios such as current ratio, so the fixture must contain one." },
+    { "symbol": "USB", "category": "bank", "inclusion_reason": "Large regional bank, SIC 6021 confirmed. Second bank so bank-specific handling is not tuned to a single issuer." },
+    { "symbol": "O", "category": "reit", "inclusion_reason": "Net-lease REIT, SIC 6798 confirmed from SEC submissions. REITs report FFO rather than ordinary earnings, and pay out most income, so they break generic profitability screens." },
+    { "symbol": "PLD", "category": "reit", "inclusion_reason": "Industrial REIT, SIC 6798 confirmed. Second REIT for the same reason as the second bank." },
+
+    { "symbol": "GOOGL", "category": "multi_class", "inclusion_reason": "Alphabet Class A. Paired with GOOG under one CIK to prove two securities can share an issuer and must not share a security_id." },
+    { "symbol": "GOOG", "category": "multi_class", "inclusion_reason": "Alphabet Class C. Exchange name says 'Capital Stock' rather than 'Common Stock', which the first version of the classifier could not resolve." },
+    { "symbol": "BRK.B", "category": "multi_class", "inclusion_reason": "Berkshire Class B. The two upstream sources disagree on the symbol: Nasdaq Trader writes BRK.B, SEC company_tickers.json writes BRK-B. Direct evidence that a symbol is not an identity." },
+    { "symbol": "FOXA", "category": "multi_class", "inclusion_reason": "Fox Class A, the lower-vote listed class." },
+    { "symbol": "FOX", "category": "multi_class", "inclusion_reason": "Fox Class B, the higher-vote listed class. Same issuer as FOXA." },
+    { "symbol": "LEN", "category": "multi_class", "inclusion_reason": "Lennar Class A homebuilder." },
+    { "symbol": "LEN.B", "category": "multi_class", "inclusion_reason": "Lennar Class B. Exchange name is bare 'Lennar Corporation Class B' with no instrument word, so it is deliberately the fixture's medium-confidence classification case." },
+
+    { "symbol": "SMCI", "category": "restatement", "inclusion_reason": "Super Micro Computer. Late-filing notices confirmed in SEC submissions: NT 10-K filed 2024-08-30, NT 10-Q filed 2024-11-13 and 2025-02-11, around its accounting review and auditor change." },
+
+    { "symbol": "CMG", "category": "stock_split", "inclusion_reason": "Chipotle. 50-for-1 split in June 2024, one of the largest US splits, so unadjusted price history is badly wrong if splits are ignored. Split event not yet machine-verified; confirm from price data in a later phase." },
+    { "symbol": "NVDA", "category": "stock_split", "inclusion_reason": "NVIDIA. 10-for-1 split in June 2024. Split event not yet machine-verified; confirm from price data in a later phase." },
+    { "symbol": "WMT", "category": "stock_split", "inclusion_reason": "Walmart. 3-for-1 split in February 2024, a small ratio that still breaks naive price joins. Split event not yet machine-verified." },
+
+    { "symbol": "AMC", "category": "dilutive_small_cap", "inclusion_reason": "AMC Entertainment. Repeated large equity issuance, so share count moves far faster than fundamentals and per-share metrics decay. Dilution magnitude not yet machine-verified." },
+    { "symbol": "GNS", "category": "dilutive_small_cap", "inclusion_reason": "Genius Group. Small-cap foreign private issuer with heavy issuance history. Dilution magnitude not yet machine-verified." },
+    { "symbol": "PHUN", "category": "dilutive_small_cap", "inclusion_reason": "Phunware. Micro-cap with a documented history of issuance and reverse splits. Dilution magnitude not yet machine-verified." },
+
+    { "symbol": "SAVE", "category": "delisted", "cik": "0001498710", "inclusion_reason": "Spirit Airlines. Absent from both exchange directory files and from SEC company_tickers.json; SEC submissions show the registrant renamed to Spirit Aviation Holdings with ticker FLYYQ on OTC. Classified from the 10-K cover page instead of a listing record." },
+    { "symbol": "BIG", "category": "delisted", "cik": "0000768835", "inclusion_reason": "Big Lots. SEC registrant is now named FORMER BL STORES INC with zero current tickers. Proves a security_id must survive after every symbol is gone." },
+    { "symbol": "RAD", "category": "delisted", "cik": "0000084129", "inclusion_reason": "Rite Aid. SEC registrant is now NEW RITE AID, LLC with zero current tickers. Second delisted case with a different post-bankruptcy structure." },
+
+    { "symbol": "MTDR", "category": "insider_cluster", "inclusion_reason": "Matador Resources. 13 distinct reporting owners recorded open-market purchases (Form 4 transaction code P) between 2025-10-30 and 2025-11-06, an 8-day window. Computed from the SEC Form 345 quarterly insider data set, not from a news report." },
+    { "symbol": "VAC", "category": "insider_cluster", "inclusion_reason": "Marriott Vacations Worldwide. 13 distinct reporting owners recorded code-P purchases between 2025-11-13 and 2026-01-07. Second cluster, spread over a longer window than MTDR so the detector cannot assume a tight burst." },
+
+    { "symbol": "SPY", "category": "etf", "inclusion_reason": "SPDR S&P 500 ETF Trust. Carries the Nasdaq Trader ETF flag, so it is the fixture's known-ETF classification case. An ETF must never be ranked as an operating company." },
+    { "symbol": "ABR$D", "category": "preferred", "inclusion_reason": "Arbor Realty Trust 6.375% Series D Cumulative Redeemable Preferred. The fixture's known-preferred classification case. Symbol also differs between sources: Nasdaq writes ABR$D, SEC writes ABR-PD." },
+    { "symbol": "AACIW", "category": "warrant", "inclusion_reason": "Armada Acquisition Corp. III Warrant. The fixture's known-warrant classification case. Warrants have no earnings and must never reach a ranking screen." }
+  ]
+}

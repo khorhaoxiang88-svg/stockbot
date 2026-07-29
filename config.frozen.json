@@ -1,0 +1,55 @@
+{
+  "_comment": "FROZEN for Release 1. Do not edit values without bumping the matching *_version key. Placeholders are explicitly marked null and are set in the phase named in _placeholders.",
+
+  "strategy_version": 1,
+  "selection_rule_version": 1,
+  "protocol_version": 1,
+  "resolution_policy_version": 1,
+  "accrual_policy_version": 1,
+  "mapping_version": 1,
+
+  "composite_threshold": null,
+
+  "max_candidates_per_selection": 5,
+  "max_per_cohort": 2,
+
+  "book_starting_nav": 100000,
+  "position_notional": 1000,
+  "max_open_positions_per_horizon": 100,
+  "horizons": [20, 60],
+
+  "atr_window": 14,
+  "stop_atr_multiple": 2.0,
+  "target_atr_multiple": 4.0,
+  "gap_cancel_atr": 1.0,
+
+  "slippage_bps_high_liquidity": 5,
+  "slippage_bps_mid_liquidity": 15,
+
+  "cohort_blend_target": 50,
+  "cohort_blend_floor": 10,
+
+  "dilution_disqualify": 22,
+  "current_ratio_cap": 5.0,
+  "interest_coverage_cap": 50,
+
+  "exit_cooldown_days": 10,
+  "gap_cancel_cooldown_days": 3,
+
+  "freshness_sla": {
+    "_units": "max_staleness_hours, measured in UTC",
+    "symbol_master": 168,
+    "prices_daily": 24,
+    "fundamentals": 720,
+    "corporate_actions": 24,
+    "filings": 48
+  },
+
+  "_placeholders": {
+    "composite_threshold": "Set in Phase S (selection). Must be a number before Release 1 ships."
+  },
+
+  "_provisional": {
+    "freshness_sla": "Source names and hour budgets follow the F10 freshness spec. The F10 table was not supplied in the Phase 1 prompt, so the source list here is the planned Release 1 set and the hour budgets are first-pass. Confirm against F10 before Phase 2 wires any real source."
+  }
+}
