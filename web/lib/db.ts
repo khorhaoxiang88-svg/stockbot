@@ -304,6 +304,141 @@ export function getProvenance(securityId: number) {
   );
 }
 
+export type XbrlFact = {
+  fact_id: number;
+  concept: string;
+  taxonomy: string;
+  unit: string | null;
+  context_type: string | null;
+  period_start: string | null;
+  period_end: string | null;
+  normalized_numeric_value: number | null;
+  raw_value: string | null;
+  fiscal_year: number | null;
+  fiscal_period: string | null;
+  form_type: string | null;
+  accession_no: string | null;
+  filed_date: string | null;
+  accepted_at: string | null;
+  semantic_hash: string;
+  source_fact_key: string;
+  source_endpoint: string;
+  decimals: number | null;
+  is_nil: number | null;
+  dimensions_json: string | null;
+};
+
+export type FactsSummary = {
+  total: number;
+  usable: number;
+  unusable: number;
+  concepts: number;
+  accessions: number;
+  earliest: string | null;
+  latest: string | null;
+};
+
+export function getFactsSummary(cik: string | null) {
+  if (!cik) {
+    return {
+      status: { state: "ok", path: DB_PATH } as DbStatus,
+      row: null as FactsSummary | null,
+    };
+  }
+  const result = readAll<FactsSummary>(
+    "xbrl_facts",
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN accepted_at IS NOT NULL THEN 1 ELSE 0 END) AS usable,
+            SUM(CASE WHEN accepted_at IS NULL THEN 1 ELSE 0 END) AS unusable,
+            COUNT(DISTINCT concept) AS concepts,
+            COUNT(DISTINCT accession_no) AS accessions,
+            MIN(period_end) AS earliest, MAX(period_end) AS latest
+       FROM xbrl_facts WHERE cik = '${String(cik).replace(/'/g, "")}'`,
+  );
+  return { status: result.status, row: result.rows[0] ?? null };
+}
+
+export function getFacts(cik: string | null, concept?: string, limit = 60) {
+  if (!cik) return { status: { state: "ok", path: DB_PATH } as DbStatus, rows: [] as XbrlFact[] };
+  const safeCik = String(cik).replace(/'/g, "");
+  const conceptClause = concept
+    ? `AND concept = '${concept.replace(/'/g, "")}'`
+    : "";
+  return readAll<XbrlFact>(
+    "xbrl_facts",
+    `SELECT fact_id, concept, taxonomy, unit, context_type, period_start, period_end,
+            normalized_numeric_value, raw_value, fiscal_year, fiscal_period, form_type,
+            accession_no, filed_date, accepted_at, semantic_hash, source_fact_key,
+            source_endpoint, decimals, is_nil, dimensions_json
+       FROM xbrl_facts
+      WHERE cik = '${safeCik}' ${conceptClause}
+      ORDER BY period_end DESC, concept, filed_date DESC
+      LIMIT ${Number.isInteger(limit) && limit > 0 ? limit : 60}`,
+  );
+}
+
+/** Facts whose meaning matches but which came from different filings. */
+export function getRestatements(cik: string | null, limit = 8) {
+  if (!cik) {
+    return {
+      status: { state: "ok", path: DB_PATH } as DbStatus,
+      rows: [] as { semantic_hash: string; concept: string; unit: string | null;
+        period_start: string | null; period_end: string | null;
+        n_rows: number; n_accessions: number; n_values: number }[],
+    };
+  }
+  const safeCik = String(cik).replace(/'/g, "");
+  return readAll<{
+    semantic_hash: string;
+    concept: string;
+    unit: string | null;
+    period_start: string | null;
+    period_end: string | null;
+    n_rows: number;
+    n_accessions: number;
+    n_values: number;
+  }>(
+    "xbrl_facts",
+    `SELECT semantic_hash, concept, unit, period_start, period_end,
+            COUNT(*) AS n_rows,
+            COUNT(DISTINCT accession_no) AS n_accessions,
+            COUNT(DISTINCT normalized_numeric_value) AS n_values
+       FROM xbrl_facts
+      WHERE cik = '${safeCik}'
+      GROUP BY semantic_hash
+     HAVING n_accessions > 1 AND n_values > 1
+      ORDER BY n_values DESC, period_end DESC
+      LIMIT ${Number.isInteger(limit) && limit > 0 ? limit : 8}`,
+  );
+}
+
+export function getFactsBySemanticHash(semanticHash: string) {
+  return readAll<XbrlFact>(
+    "xbrl_facts",
+    `SELECT fact_id, concept, taxonomy, unit, context_type, period_start, period_end,
+            normalized_numeric_value, raw_value, fiscal_year, fiscal_period, form_type,
+            accession_no, filed_date, accepted_at, semantic_hash, source_fact_key,
+            source_endpoint, decimals, is_nil, dimensions_json
+       FROM xbrl_facts WHERE semantic_hash = '${semanticHash.replace(/'/g, "")}'
+      ORDER BY filed_date`,
+  );
+}
+
+export function getPayloadSummary() {
+  const result = readAll<{
+    n: number;
+    bytes: number;
+    sources: number;
+    latest: string | null;
+  }>(
+    "raw_payloads",
+    `SELECT COUNT(*) AS n, COALESCE(SUM(byte_size), 0) AS bytes,
+            COUNT(DISTINCT identifier) AS sources, MAX(fetched_at) AS latest
+       FROM raw_payloads`,
+  );
+  return { status: result.status, row: result.rows[0] ?? null };
+}
+
 /** SIC codes the fixture cares about naming. Mirrors classify.industry_label. */
 export function industryLabel(sicCode: string | null): string | null {
   if (!sicCode) return null;

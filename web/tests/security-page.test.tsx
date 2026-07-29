@@ -19,7 +19,12 @@ let dbPath: string;
 async function buildDatabase() {
   const { default: Database } = await import("better-sqlite3");
   const db = new Database(dbPath);
-  for (const file of ["001_operations_tables.up.sql", "002_securities_identity.up.sql"]) {
+  // Apply every migration in order, so this stays correct as migrations are added.
+  const upFiles = fs
+    .readdirSync(MIGRATIONS)
+    .filter((name) => name.endsWith(".up.sql"))
+    .sort();
+  for (const file of upFiles) {
     db.exec(fs.readFileSync(path.join(MIGRATIONS, file), "utf-8"));
   }
 
@@ -69,6 +74,31 @@ async function buildDatabase() {
     `INSERT INTO listings (security_id, symbol, exchange, valid_from, valid_to, is_primary)
      VALUES (9, 'AACIW', 'Nasdaq', '2026-07-29', NULL, 1)`,
   ).run();
+  // XBRL facts: a restatement (same meaning, two accessions, two values) plus
+  // one fact whose acceptance time could not be resolved.
+  db.prepare(
+    `INSERT INTO raw_payloads (payload_id, source, endpoint, identifier, relative_path,
+                               content_hash, byte_size, fetched_at)
+     VALUES ('pay1', 'sec', 'companyfacts', 'CIK0000019617',
+             'data/raw/sec/2026/07/abc.json.gz', 'abc', 1234, '2026-07-29T00:00:00Z')`,
+  ).run();
+  const insertFact = db.prepare(
+    `INSERT INTO xbrl_facts (payload_id, source_fact_key, cik, taxonomy, concept, unit,
+                             context_type, period_start, period_end, context_hash,
+                             semantic_hash, normalized_numeric_value, raw_value,
+                             fiscal_year, fiscal_period, form_type, accession_no,
+                             filed_date, accepted_at, source_endpoint)
+     VALUES ('pay1', ?, '0000019617', 'us-gaap', ?, 'USD', 'duration',
+             '2023-01-01', '2023-12-31', 'ctx1', ?, ?, ?, 2023, 'FY', ?, ?, ?, ?,
+             'companyfacts')`,
+  );
+  insertFact.run("k0", "Revenues", "sem1", 1000, "1000", "10-K", "0000019617-24-01", "2024-02-01",
+    "2024-02-01T21:30:00Z");
+  insertFact.run("k1", "Revenues", "sem1", 1250, "1250", "10-K/A", "0000019617-25-02",
+    "2025-02-01", "2025-02-01T22:05:11Z");
+  insertFact.run("k2", "Assets", "sem2", 5000, "5000", "10-K", "0000019617-99-99", "2023-02-01",
+    null);
+
   db.close();
 }
 
@@ -92,7 +122,12 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.doUnmock("@/lib/paths");
-  fs.rmSync(tempDir, { recursive: true, force: true });
+  try {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  } catch {
+    // Windows keeps a brief lock on the SQLite file after close; the temp
+    // directory is disposable either way.
+  }
 });
 
 describe("security page", () => {
@@ -118,7 +153,7 @@ describe("security page", () => {
     for (const section of [
       "Prices",
       "Corporate actions",
-      "Fundamentals",
+      "Derived fundamentals",
       "Universe membership",
       "Signals",
     ]) {
@@ -127,6 +162,13 @@ describe("security page", () => {
     // This fixture security has no price rows, so Prices and Corporate actions
     // show their own empty states alongside the three not-yet-built sections.
     expect(html.match(/No data yet/g)?.length).toBe(5);
+  });
+
+  it("shows the price dataset panel even with no bars", async () => {
+    const html = await renderSecurityPage("7");
+    expect(html).toContain("Price dataset");
+    expect(html).toContain("Revisions");
+    expect(html).toContain("No bar for this security has been corrected");
   });
 
   it("shows the listing window", async () => {
@@ -156,11 +198,32 @@ describe("security page", () => {
     expect(html).not.toContain("unknown securities are never ranked");
   });
 
-  it("shows the price dataset panel even with no bars", async () => {
+  it("renders the facts browser with concept, period, value, form, filed and accepted", async () => {
     const html = await renderSecurityPage("7");
-    expect(html).toContain("Price dataset");
-    expect(html).toContain("Revisions");
-    expect(html).toContain("No bar for this security has been corrected");
+    expect(html).toContain("Accounting facts");
+    expect(html).toContain("Revenues");
+    expect(html).toContain("2023-12-31");
+    expect(html).toContain("10-K/A");
+    expect(html).toContain("2025-02-01T22:05:11Z");
+  });
+
+  it("shows both versions of a restated fact, not one overwritten row", async () => {
+    const html = await renderSecurityPage("7");
+    expect(html).toContain("Restated facts");
+    expect(html).toContain("0000019617-24-01");
+    expect(html).toContain("0000019617-25-02");
+    expect(html).toContain("2 filings");
+  });
+
+  it("flags a fact whose acceptance time could not be resolved", async () => {
+    const html = await renderSecurityPage("7");
+    expect(html).toContain("unusable for official candidates");
+  });
+
+  it("states the companyfacts limitation instead of hiding it", async () => {
+    const html = await renderSecurityPage("7");
+    expect(html).toContain("Known limitation");
+    expect(html).toContain("decimals");
   });
 
   it("shows a warrant as not rankable, for the security-type reason", async () => {

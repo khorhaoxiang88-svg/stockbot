@@ -26,11 +26,15 @@ import {
 import {
   getCorporateActions,
   getCurrentDatasetVersion,
+  getFacts,
+  getFactsBySemanticHash,
+  getFactsSummary,
   getFixtureEntryFor,
   getListingsFor,
   getPriceRevisions,
   getPrices,
   getProvenance,
+  getRestatements,
   getSecurityById,
   industryLabel,
 } from "@/lib/db";
@@ -130,6 +134,25 @@ export default async function SecurityPage({
   const percent = (value: number | null) =>
     value === null ? "—" : `${(value * 100).toFixed(2)}%`;
 
+  const factsSummary = getFactsSummary(row.cik);
+  const facts = getFacts(row.cik, undefined, 60);
+  const restatements = getRestatements(row.cik, 6);
+  const restatementDetail = restatements.rows.map((group) => ({
+    group,
+    versions: getFactsBySemanticHash(group.semantic_hash).rows,
+  }));
+  const acceptanceRate =
+    factsSummary.row && factsSummary.row.total > 0
+      ? (factsSummary.row.usable / factsSummary.row.total) * 100
+      : null;
+  const compactNumber = (value: number | null) => {
+    if (value === null) return "—";
+    const abs = Math.abs(value);
+    if (abs >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+    if (abs >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
+    if (abs >= 1e3) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+    return String(value);
+  };
   const currentSymbol =
     listings.rows.find((listing) => listing.valid_to === null)?.symbol ??
     listings.rows[0]?.symbol ??
@@ -460,10 +483,190 @@ export default async function SecurityPage({
         )}
       </section>
 
+      <section className="mb-14 space-y-6">
+        <h2>Accounting facts</h2>
+        {!factsSummary.row || factsSummary.row.total === 0 ? (
+          <p className="rounded-lg border border-dashed border-border px-6 py-8 text-muted-foreground">
+            No data yet. No SEC XBRL facts stored for this CIK — expected for a
+            security with no SEC registrant, such as a SPAC warrant.
+          </p>
+        ) : (
+          <>
+            <div className="grid gap-8 md:grid-cols-2">
+              <Card className="gap-6 py-8">
+                <CardHeader className="px-8">
+                  <CardTitle className="text-2xl">Fact coverage</CardTitle>
+                  <CardDescription className="text-base">
+                    Source endpoint: companyfacts
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="px-8">
+                  <dl>
+                    <Field label="Facts stored">
+                      {factsSummary.row.total.toLocaleString()}
+                    </Field>
+                    <Field label="Distinct concepts">
+                      {factsSummary.row.concepts.toLocaleString()}
+                    </Field>
+                    <Field label="Distinct accessions">
+                      {factsSummary.row.accessions.toLocaleString()}
+                    </Field>
+                    <Field label="Period range">
+                      {factsSummary.row.earliest ?? "—"} to {factsSummary.row.latest ?? "—"}
+                    </Field>
+                    <Field label="Usable (accepted_at set)">
+                      <span
+                        className={
+                          acceptanceRate !== null && acceptanceRate >= 95
+                            ? "text-emerald-200"
+                            : "text-amber-200"
+                        }
+                      >
+                        {factsSummary.row.usable.toLocaleString()}
+                        {acceptanceRate !== null && ` (${acceptanceRate.toFixed(2)}%)`}
+                      </span>
+                    </Field>
+                    <Field label="Unusable (no accepted_at)">
+                      <span
+                        className={
+                          factsSummary.row.unusable > 0 ? "text-amber-200" : undefined
+                        }
+                      >
+                        {factsSummary.row.unusable.toLocaleString()}
+                      </span>
+                    </Field>
+                  </dl>
+                </CardContent>
+              </Card>
+
+              <Card className="gap-6 py-8">
+                <CardHeader className="px-8">
+                  <CardTitle className="text-2xl">Known limitation</CardTitle>
+                  <CardDescription className="text-base">
+                    What this endpoint cannot tell us
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4 px-8">
+                  <p className="text-muted-foreground">
+                    SEC Company Facts returns consolidated facts only. It does not
+                    return the XBRL <span className="font-mono">decimals</span>{" "}
+                    attribute, nil flags, or dimensional members, so those columns
+                    are stored as NULL rather than guessed.
+                  </p>
+                  <p className="text-muted-foreground">
+                    Recovering them means parsing instance documents, which Release 1
+                    deliberately does not do.
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+
+            {restatementDetail.length > 0 && (
+              <div className="space-y-5 rounded-xl border border-amber-400/30 bg-amber-400/5 p-6">
+                <div>
+                  <h3 className="text-amber-100">Restated facts</h3>
+                  <p className="text-base text-muted-foreground">
+                    Same concept and period, reported differently in different
+                    filings. Every version is kept as its own row — nothing was
+                    overwritten.
+                  </p>
+                </div>
+                {restatementDetail.map(({ group, versions }) => (
+                  <div key={group.semantic_hash} className="space-y-2">
+                    <p className="font-medium">
+                      {group.concept}{" "}
+                      <span className="text-base text-muted-foreground">
+                        [{group.unit}] {group.period_start ?? ""}
+                        {group.period_start ? " to " : ""}
+                        {group.period_end} · {group.n_accessions} filings,{" "}
+                        {group.n_values} distinct values
+                      </span>
+                    </p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <tbody>
+                          {versions.map((version) => (
+                            <tr key={version.fact_id} className="border-b border-border/50">
+                              <td className="py-2 pr-6 text-right font-mono">
+                                {compactNumber(version.normalized_numeric_value)}
+                              </td>
+                              <td className="py-2 pr-6 font-mono text-base">
+                                {version.accession_no}
+                              </td>
+                              <td className="py-2 pr-6 text-base">{version.form_type}</td>
+                              <td className="py-2 pr-6 text-base text-muted-foreground">
+                                filed {version.filed_date}
+                              </td>
+                              <td className="py-2 text-base text-muted-foreground">
+                                accepted {version.accepted_at ?? "unresolved"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div>
+              <h3 className="mb-3">Raw facts</h3>
+              <p className="mb-4 text-base text-muted-foreground">
+                Most recent {facts.rows.length} of{" "}
+                {factsSummary.row.total.toLocaleString()}, newest period first.
+              </p>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Concept</TableHead>
+                    <TableHead>Period</TableHead>
+                    <TableHead className="text-right">Value</TableHead>
+                    <TableHead>Form</TableHead>
+                    <TableHead>Filed</TableHead>
+                    <TableHead>Accepted at (UTC)</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {facts.rows.map((fact) => (
+                    <TableRow key={fact.fact_id}>
+                      <TableCell>
+                        {fact.concept}
+                        <span className="ml-2 text-base text-muted-foreground">
+                          {fact.unit}
+                        </span>
+                      </TableCell>
+                      <TableCell className="font-mono text-base">
+                        {fact.period_start ? `${fact.period_start} → ` : ""}
+                        {fact.period_end}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {compactNumber(fact.normalized_numeric_value)}
+                      </TableCell>
+                      <TableCell className="text-base">{fact.form_type}</TableCell>
+                      <TableCell className="font-mono text-base">{fact.filed_date}</TableCell>
+                      <TableCell className="font-mono text-base">
+                        {fact.accepted_at ? (
+                          fact.accepted_at
+                        ) : (
+                          <span className="text-amber-200">
+                            unresolved — unusable for official candidates
+                          </span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </>
+        )}
+      </section>
+
       <div className="grid gap-10 md:grid-cols-2">
         <EmptySection
-          title="Fundamentals"
-          note="No data yet. Fundamentals arrive in a later phase."
+          title="Derived fundamentals"
+          note="No data yet. Ratios and derived metrics arrive in a later phase; only raw facts are stored so far."
         />
         <EmptySection
           title="Universe membership"

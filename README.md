@@ -306,6 +306,66 @@ reproducible after the vendor revises history underneath it.
 (Eastern calendar dates), because a daily bar belongs to a session, not to a UTC
 instant. Every true timestamp column stays UTC.
 
+## SEC facts (migration 004)
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/sec/ingest_facts.py
+```
+
+### Why this table cannot be retrofitted
+
+Once source facts have been collapsed or overwritten, the evidence needed to
+validate them later is gone. So `xbrl_facts` is **append-only, enforced by
+database triggers**, not by convention. `UPDATE` and `DELETE` both raise.
+
+Uniqueness is `(payload_id, source_fact_key)` — **source** identity.
+`source_fact_key` is `taxonomy|concept|unit|position`, the position being the
+fact's index in the source document. Two facts that normalise identically are
+still two rows, which is exactly what a restatement is.
+
+- `semantic_hash` covers `(taxonomy, concept, unit, context_type, period_start,
+  period_end, dimensions_json)` and is used **only** for grouping and duplicate
+  detection. It is never a uniqueness constraint.
+- `context_hash` covers the context fields alone, for context grouping.
+
+**`semantic_hash` deliberately excludes the CIK**, because the specified field
+list excludes it. 71,910 hash values are therefore shared by more than one
+company. Every duplicate or restatement query must group by
+`(cik, semantic_hash)`, never `semantic_hash` alone.
+
+### Payload preservation
+
+Every response is written to
+`data/raw/{source}/{yyyy}/{mm}/{content_hash}.json.gz`, addressed by the sha256
+of its **uncompressed** bytes. SQLite stores metadata only. `read_payload()`
+verifies the hash before returning anything and raises `PayloadCorruptError` on
+a mismatch — a payload that does not match its recorded hash is evidence of
+corruption, and continuing would poison everything derived from it.
+
+### Acceptance timestamps
+
+`filed_date` cannot support an intraday cutoff, so `accepted_at` is resolved
+through the accession in EDGAR submissions metadata and stored in UTC.
+
+`submissions.recent` holds only the most recent ~1000 filings, and Company Facts
+routinely references older accessions than that (AAPL: 71 fact-bearing
+accessions, 27 of them outside the recent window). The paginated
+`filings.files` pages are fetched too. Skipping them would have left a large
+share of historical facts unresolved.
+
+A fact with no resolvable `accepted_at` is **unusable for official candidates**.
+That rule lives in one place, the `usable_facts` view.
+
+### Known limitation, implemented not worked around
+
+SEC Company Facts returns consolidated facts only. Every key an entry can carry
+was enumerated from a live payload: `accn, end, filed, form, fp, frame, fy,
+start, val`. There is no `decimals`, no nil flag, and no dimensional member.
+
+So `decimals`, `is_nil` and `dimensions_json` are stored as **NULL** and
+`source_endpoint` is `'companyfacts'`. They are not inferred or defaulted.
+Recovering them means parsing instance documents, which Release 1 does not do.
+
 ## Data sources
 
 Both were verified against live responses on 2026-07-29.
