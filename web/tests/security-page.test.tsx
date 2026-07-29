@@ -115,10 +115,18 @@ describe("security page", () => {
 
   it("renders empty sections for data that does not exist yet", async () => {
     const html = await renderSecurityPage("7");
-    for (const section of ["Prices", "Fundamentals", "Universe membership", "Signals"]) {
+    for (const section of [
+      "Prices",
+      "Corporate actions",
+      "Fundamentals",
+      "Universe membership",
+      "Signals",
+    ]) {
       expect(html).toContain(section);
     }
-    expect(html.match(/No data yet/g)?.length).toBe(4);
+    // This fixture security has no price rows, so Prices and Corporate actions
+    // show their own empty states alongside the three not-yet-built sections.
+    expect(html.match(/No data yet/g)?.length).toBe(5);
   });
 
   it("shows the listing window", async () => {
@@ -146,6 +154,13 @@ describe("security page", () => {
     expect(html).toContain("high confidence"); // classified cleanly
     expect(html).toContain("not common stock"); // still excluded
     expect(html).not.toContain("unknown securities are never ranked");
+  });
+
+  it("shows the price dataset panel even with no bars", async () => {
+    const html = await renderSecurityPage("7");
+    expect(html).toContain("Price dataset");
+    expect(html).toContain("Revisions");
+    expect(html).toContain("No bar for this security has been corrected");
   });
 
   it("shows a warrant as not rankable, for the security-type reason", async () => {

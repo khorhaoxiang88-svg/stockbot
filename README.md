@@ -197,6 +197,115 @@ directory files, and each has a regression test:
 - "Lennar Corporation Class B" has no instrument word at all. It now resolves to
   common stock at **medium** confidence, with its own source label.
 
+## Prices (migration 003)
+
+Ingest 3 years of raw daily bars for every fixture security:
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/prices/ingest.py
+```
+
+Limit to a few symbols while developing:
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/prices/ingest.py --symbols NVDA CMG WMT
+```
+
+### Raw only
+
+`prices` has no adjusted-close column. Adjustment happens at read time in
+`pipeline/prices/adjust.py` (and its mirror `web/lib/adjust.ts`) from the
+`corporate_actions` ledger:
+
+```
+factor(d)   = product of ratios of every split with ex_date AFTER d
+adjusted(d) = raw(d) / factor(d)
+```
+
+A later correction to a split ratio therefore fixes every chart at once, with no
+rewrite of price history.
+
+**The trap this hit.** yfinance's `auto_adjust=False` only turns off *dividend*
+adjustment. The OHLC it returns is still **split-adjusted by Yahoo at source**.
+Verified 2026-07-29: Yahoo reports NVDA's 2024-06-07 close as 120.89, but NVDA
+traded near 1208.90 that day and did not split until 2024-06-10. Storing that
+and then adjusting again produced a **+907% artificial return** across the split.
+`YFinanceProvider` now un-adjusts on the way in, so what reaches the database is
+genuine traded price. `pipeline/tests/test_yfinance_provider.py` guards it
+offline.
+
+### Splits vs spin-offs
+
+Yahoo packs spin-off adjustment factors into the **same** `Stock Splits` column
+as real splits, and exposes nothing that tells them apart — `Ticker.actions` has
+only `Dividends` and `Stock Splits`.
+
+Confirmed against SEC filings on 2026-07-29:
+
+| Symbol | Date | Yahoo "split" | What it actually was |
+|---|---|---|---|
+| HON | 2025-10-30 | 1.061 | Solstice Advanced Materials spin-off (8-K; Form 10-12B CIK 0002064953) |
+| HON | 2026-06-29 | 0.9535 | Honeywell Aerospace spin-off (8-K) |
+| LEN | 2025-01-21 | 1.033 | Millrose Properties spin-off (8-K) |
+| LEN.B | 2025-01-21 | 1.052 | same event, different class |
+
+Three independent tells:
+
+1. **The ratio is not a split ratio.** Real splits are small whole-number
+   ratios. `is_clean_split_ratio()` accepts a value only if it (or its
+   reciprocal) is a fraction with denominator ≤ 20.
+2. **The implied move is wrong.** HON's 0.9535 implies a +4.88% move; the stock
+   actually fell 1.90%.
+3. **Two share classes got different ratios on one date.** LEN 1.033 vs LEN.B
+   1.052. A real split applies identically to every class of an issuer.
+
+So an unclean ratio is filed as `action_type = 'other'` with
+`requires_manual_review = 1`, recording what is actually known — a ratio-bearing
+action of undetermined type — instead of asserting "split". It is then excluded
+from adjustment twice over, since `adjusted_series` takes only
+`action_type = 'split'` with the review flag clear.
+
+**Un-adjusting and classifying are separate jobs.** The provider still undoes
+*every* factor Yahoo applied, spin-offs included, because that is what recovers
+the traded price. Only the ledger entry changes. Filtering the un-adjustment
+would leave spin-off securities permanently mis-scaled.
+
+Promoting these rows from `other` to `spinoff` needs an authoritative source
+(SEC 8-K item 2.01 / Form 10-12B), which is a candidate for a later phase. Until
+then they stay flagged rather than guessed.
+
+### Swapping provider
+
+Everything goes through `PriceProvider` in `pipeline/prices/base.py`. To change
+vendor, write one class and change `ACTIVE_PROVIDER` in
+`pipeline/prices/registry.py`.
+
+Series are never spliced. Switching vendors means refetching a security's whole
+history and closing its `price_series_provenance` window —
+`ingest.switch_provider()` does both. Stitching a new vendor onto the end of an
+old series would put a fake return at the seam.
+
+### Revisions and dataset versions
+
+On re-fetch, each bar is compared against what is stored. A difference beyond
+half a cent (or any volume change) writes the **complete** old and new OHLCV to
+`price_revisions`, increments that row's `revision`, creates a new global
+`price_dataset_versions` row, and only then updates the canonical row. Nothing
+is absorbed silently.
+
+Re-running on unchanged data updates `last_verified_at` and nothing else — no
+new dataset version.
+
+`pipeline/prices/versions.py` reconstructs the series as of any earlier dataset
+version by walking revisions backwards, which is what makes a backtest
+reproducible after the vendor revises history underneath it.
+
+### Date semantics
+
+`prices.date` and `corporate_actions.ex_date` are US market **trading dates**
+(Eastern calendar dates), because a daily bar belongs to a session, not to a UTC
+instant. Every true timestamp column stays UTC.
+
 ## Data sources
 
 Both were verified against live responses on 2026-07-29.
@@ -207,6 +316,7 @@ Both were verified against live responses on 2026-07-29.
 | SEC submissions | `data.sec.gov/submissions/CIK##########.json` | Company name, SIC code, exchanges, filing history. |
 | SEC insider data | `www.sec.gov/files/structureddata/data/insider-transactions-data-sets/<q>_form345.zip` | Quarterly Form 3/4/5 tables. Used to compute insider clusters from `TRANS_CODE = 'P'`. |
 | Nasdaq Trader | `www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt`, `otherlisted.txt` | Pipe-delimited. Drop the `File Creation Time:` footer row. |
+| Prices | yfinance 1.5.2 (Yahoo Finance) | Private, non-commercial prototype source only — yfinance is not affiliated with Yahoo, and the Yahoo Finance API is documented as personal use. Returns split-adjusted OHLC even with `auto_adjust=False`; the provider un-adjusts it. |
 
 Two gotchas confirmed from the live data:
 

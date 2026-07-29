@@ -207,6 +207,103 @@ export function getFixtureEntryFor(securityId: number) {
   return { status: result.status, row: result.rows[0] ?? null };
 }
 
+export type PriceBar = {
+  date: string; // ET trading date
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  volume: number | null;
+  revision: number;
+  price_data_version: number;
+};
+
+export type CorporateAction = {
+  ex_date: string;
+  action_type: string;
+  ratio: number | null;
+  cash_amount: number | null;
+  provider: string;
+  requires_manual_review: number;
+};
+
+export type PriceRevision = {
+  date: string;
+  revision: number;
+  old_open: number | null;
+  old_high: number | null;
+  old_low: number | null;
+  old_close: number | null;
+  old_volume: number | null;
+  new_open: number | null;
+  new_high: number | null;
+  new_low: number | null;
+  new_close: number | null;
+  new_volume: number | null;
+  detected_at: string;
+  accepted_at: string | null;
+  provider: string;
+  price_data_version_before: number | null;
+  price_data_version_after: number | null;
+};
+
+export type DatasetVersion = {
+  dataset_version: number;
+  created_at: string;
+  provider: string;
+  reason: string;
+  changed_row_count: number;
+};
+
+export function getPrices(securityId: number) {
+  return readAll<PriceBar>(
+    "prices",
+    `SELECT date, open, high, low, close, volume, revision, price_data_version
+       FROM prices WHERE security_id = ${Number(securityId) || 0}
+      ORDER BY date`,
+  );
+}
+
+export function getCorporateActions(securityId: number) {
+  return readAll<CorporateAction>(
+    "corporate_actions",
+    `SELECT ex_date, action_type, ratio, cash_amount, provider, requires_manual_review
+       FROM corporate_actions WHERE security_id = ${Number(securityId) || 0}
+      ORDER BY ex_date`,
+  );
+}
+
+export function getPriceRevisions(securityId: number) {
+  return readAll<PriceRevision>(
+    "price_revisions",
+    `SELECT * FROM price_revisions WHERE security_id = ${Number(securityId) || 0}
+      ORDER BY date DESC, revision DESC`,
+  );
+}
+
+export function getCurrentDatasetVersion() {
+  const result = readAll<DatasetVersion>(
+    "price_dataset_versions",
+    `SELECT dataset_version, created_at, provider, reason, changed_row_count
+       FROM price_dataset_versions ORDER BY dataset_version DESC LIMIT 1`,
+  );
+  return { status: result.status, row: result.rows[0] ?? null };
+}
+
+export function getProvenance(securityId: number) {
+  return readAll<{
+    provider: string;
+    valid_from: string;
+    valid_to: string | null;
+    switch_reason: string | null;
+  }>(
+    "price_series_provenance",
+    `SELECT provider, valid_from, valid_to, switch_reason
+       FROM price_series_provenance WHERE security_id = ${Number(securityId) || 0}
+      ORDER BY valid_from`,
+  );
+}
+
 /** SIC codes the fixture cares about naming. Mirrors classify.industry_label. */
 export function industryLabel(sicCode: string | null): string | null {
   if (!sicCode) return null;
