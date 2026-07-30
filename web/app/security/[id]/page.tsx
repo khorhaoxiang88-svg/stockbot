@@ -30,6 +30,9 @@ import {
   getFactsBySemanticHash,
   getFactsSummary,
   getFixtureEntryFor,
+  getFundamentalPeriods,
+  getKnowledgeStates,
+  getLatestFundamentals,
   getListingsFor,
   getPriceRevisions,
   getPrices,
@@ -37,6 +40,8 @@ import {
   getRestatements,
   getSecurityById,
   industryLabel,
+  PIOTROSKI_METRICS,
+  SCALAR_METRICS,
 } from "@/lib/db";
 import { rankExclusionReason } from "@/lib/rank";
 import { formatEastern } from "@/lib/time";
@@ -153,6 +158,56 @@ export default async function SecurityPage({
     if (abs >= 1e3) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
     return String(value);
   };
+  const fundamentals = getLatestFundamentals(securityId);
+  const fundamentalPeriods = getFundamentalPeriods(securityId);
+  const latestPeriod = fundamentals.row?.period_end as string | undefined;
+  const knowledgeStates = latestPeriod
+    ? getKnowledgeStates(securityId, latestPeriod).rows
+    : [];
+  const missingFields: Record<string, string> = fundamentals.row?.missing_fields_json
+    ? JSON.parse(String(fundamentals.row.missing_fields_json))
+    : {};
+
+  const METRIC_LABELS: Record<string, string> = {
+    pe: "P/E",
+    pb: "P/B",
+    ev_ebitda: "EV/EBITDA",
+    fcf_yield: "FCF yield",
+    roic: "ROIC",
+    interest_coverage: "Interest coverage",
+    debt_ebitda: "Debt/EBITDA",
+    current_ratio: "Current ratio",
+    gross_margin: "Gross margin",
+    revenue_growth_yoy: "Revenue growth YoY",
+    shares_outstanding: "Shares outstanding",
+    piotroski_roa_positive: "1. ROA positive",
+    piotroski_cfo_positive: "2. CFO positive",
+    piotroski_roa_improved: "3. ROA improved",
+    piotroski_accruals: "4. CFO exceeds net income",
+    piotroski_leverage_decreased: "5. Leverage decreased",
+    piotroski_current_ratio_improved: "6. Current ratio improved",
+    piotroski_no_new_shares: "7. No new shares",
+    piotroski_gross_margin_improved: "8. Gross margin improved",
+    piotroski_asset_turnover_improved: "9. Asset turnover improved",
+  };
+  const RATIO_METRICS = new Set([
+    "gross_margin",
+    "revenue_growth_yoy",
+    "fcf_yield",
+    "roic",
+  ]);
+
+  const formatMetric = (name: string, value: unknown) => {
+    if (value === null || value === undefined) return null;
+    const numeric = Number(value);
+    if (PIOTROSKI_METRICS.includes(name as never)) {
+      return numeric === 1 ? "yes (1)" : "no (0)";
+    }
+    if (name === "shares_outstanding") return compactNumber(numeric);
+    if (RATIO_METRICS.has(name)) return (numeric * 100).toFixed(2) + "%";
+    return numeric.toFixed(2);
+  };
+
   const currentSymbol =
     listings.rows.find((listing) => listing.valid_to === null)?.symbol ??
     listings.rows[0]?.symbol ??
@@ -663,11 +718,177 @@ export default async function SecurityPage({
         )}
       </section>
 
+      <section className="mb-14 space-y-6">
+        <h2>Fundamentals</h2>
+        {!fundamentals.row ? (
+          <p className="rounded-lg border border-dashed border-border px-6 py-8 text-muted-foreground">
+            No data yet. No derived fundamentals for this security, which is
+            expected when there are no SEC facts or no annual period.
+          </p>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-4">
+              <Badge variant="outline" className="px-3 py-1 font-mono">
+                period {String(fundamentals.row.period_end)}
+              </Badge>
+              <Badge variant="outline" className="px-3 py-1 font-mono">
+                knew {String(fundamentals.row.knowledge_date)}
+              </Badge>
+              <Badge variant="outline" className="px-3 py-1">
+                mapping v{String(fundamentals.row.mapping_version)}
+              </Badge>
+              {Number(fundamentals.row.model_applicable) === 0 ? (
+                <Badge
+                  variant="outline"
+                  className="border-amber-400/40 bg-amber-400/15 px-3 py-1 text-amber-200"
+                >
+                  model not applicable, never ranked
+                </Badge>
+              ) : (
+                <Badge
+                  variant="outline"
+                  className="border-emerald-400/40 bg-emerald-400/15 px-3 py-1 text-emerald-200"
+                >
+                  model applicable
+                </Badge>
+              )}
+            </div>
+
+            {fundamentals.row.market_cap === null ? (
+              <p className="text-muted-foreground">
+                Market cap: <span className="text-amber-200">not available</span>
+              </p>
+            ) : (
+              <div className="rounded-xl border border-border bg-card p-6">
+                <p className="font-medium">
+                  Market cap {compactNumber(Number(fundamentals.row.market_cap))}{" "}
+                  <span
+                    className={
+                      fundamentals.row.market_cap_confidence === "high"
+                        ? "text-base text-emerald-200"
+                        : fundamentals.row.market_cap_confidence === "medium"
+                          ? "text-base text-amber-200"
+                          : "text-base text-red-200"
+                    }
+                  >
+                    ({String(fundamentals.row.market_cap_confidence)} confidence)
+                  </span>
+                </p>
+                <p className="text-base text-muted-foreground">
+                  {compactNumber(Number(fundamentals.row.market_cap_shares_used))} shares from{" "}
+                  <span className="font-mono">
+                    {String(fundamentals.row.market_cap_concept_used)}
+                  </span>{" "}
+                  at {String(fundamentals.row.market_cap_price_used)} close on{" "}
+                  {String(fundamentals.row.market_cap_price_date)}
+                </p>
+                {fundamentals.row.market_cap_ambiguity_reason ? (
+                  <p className="mt-2 text-base text-amber-200">
+                    {String(fundamentals.row.market_cap_ambiguity_reason)}
+                  </p>
+                ) : null}
+              </div>
+            )}
+
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Metric</TableHead>
+                  <TableHead className="text-right">Value</TableHead>
+                  <TableHead>Concept tag it came from</TableHead>
+                  <TableHead>Source accession</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {[...SCALAR_METRICS, ...PIOTROSKI_METRICS].map((name) => {
+                  const shown = formatMetric(name, fundamentals.row?.[name]);
+                  const concept = fundamentals.row?.[name + "_concept_used"];
+                  const accession = fundamentals.row?.[name + "_accession"];
+                  return (
+                    <TableRow key={name}>
+                      <TableCell>{METRIC_LABELS[name] ?? name}</TableCell>
+                      <TableCell className="text-right font-mono">
+                        {shown === null ? (
+                          <span className="text-amber-200">not available</span>
+                        ) : (
+                          shown
+                        )}
+                      </TableCell>
+                      <TableCell className="font-mono text-base">
+                        {concept ? (
+                          String(concept)
+                        ) : (
+                          <span className="text-muted-foreground">
+                            {missingFields[name] ?? "not available"}
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="font-mono text-base">
+                        {accession ? String(accession) : "not available"}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+
+            {knowledgeStates.length > 1 ? (
+              <div className="space-y-3 rounded-xl border border-border bg-card p-6">
+                <p className="font-medium">
+                  {knowledgeStates.length} knowledge states for period{" "}
+                  {String(fundamentals.row.period_end)}
+                </p>
+                <p className="text-base text-muted-foreground">
+                  An amendment adds a row rather than overwriting one, so an earlier
+                  view of this period is still answerable.
+                </p>
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <tbody>
+                      {knowledgeStates.map((state) => (
+                        <tr
+                          key={String(state.knowledge_date)}
+                          className="border-b border-border/50"
+                        >
+                          <td className="py-2 pr-6 font-mono text-base">
+                            {String(state.knowledge_date)}
+                          </td>
+                          <td className="py-2 pr-6 text-base">
+                            gross margin{" "}
+                            {state.gross_margin === null
+                              ? "not available"
+                              : (Number(state.gross_margin) * 100).toFixed(2) + "%"}
+                          </td>
+                          <td className="py-2 pr-6 text-base">
+                            debt/EBITDA{" "}
+                            {state.debt_ebitda === null
+                              ? "not available"
+                              : Number(state.debt_ebitda).toFixed(4)}
+                          </td>
+                          <td className="py-2 font-mono text-base text-muted-foreground">
+                            {String(state.fact_set_hash).slice(0, 10)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : null}
+
+            {fundamentalPeriods.rows.length > 0 ? (
+              <p className="text-base text-muted-foreground">
+                Periods stored:{" "}
+                {fundamentalPeriods.rows
+                  .map((entry) => entry.period_end + " (" + entry.states + " states)")
+                  .join(", ")}
+              </p>
+            ) : null}
+          </>
+        )}
+      </section>
+
       <div className="grid gap-10 md:grid-cols-2">
-        <EmptySection
-          title="Derived fundamentals"
-          note="No data yet. Ratios and derived metrics arrive in a later phase; only raw facts are stored so far."
-        />
         <EmptySection
           title="Universe membership"
           note="No data yet. Universe snapshots arrive in a later phase."

@@ -366,6 +366,86 @@ So `decimals`, `is_nil` and `dimensions_json` are stored as **NULL** and
 `source_endpoint` is `'companyfacts'`. They are not inferred or defaulted.
 Recovering them means parsing instance documents, which Release 1 does not do.
 
+## Derived fundamentals (migration 005)
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/fundamentals/compute.py
+```
+
+Wider window for a specific issuer (used to reach older restated periods):
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/fundamentals/compute.py --symbols SMCI --since 2014-01-01 --max-periods 12
+```
+
+### knowledge_date
+
+`(security_id, period_end, knowledge_date)` is the primary key. A knowledge state
+is one acceptance timestamp at which some filing reported that period. An
+amendment **adds a row**; it never overwrites one. Without that, "what did we
+know on 2024-08-01" is unanswerable and a backtest silently uses restated figures
+the strategy could not have seen.
+
+SMCI demonstrates it: gross margin for FY2016 reads 0.165816, then 0.165142, then
+0.149193 across three knowledge dates, the last from the delinquent catch-up
+filing. All three rows exist.
+
+`latest_fundamentals` is a convenience view for "as known today". **Point-in-time
+queries must not use it** — they filter `derived_fundamentals` on
+`knowledge_date <= cutoff`.
+
+### Concept mapping
+
+Issuers tag the same quantity differently. `pipeline/fundamentals/mappings.py`
+holds a priority-ordered, versioned mapping (`MAPPING_VERSION`), seeded into
+`concept_mappings`. Revenue alone maps five tags, from the ASC 606
+`RevenueFromContractWithCustomerExcludingAssessedTax` down to the retired
+`SalesRevenueNet`.
+
+Every derived value stores `<metric>_concept_used` and `<metric>_accession`, so
+each number is traceable to one tag in one filing. Nothing is blended or averaged.
+
+### Validity rules
+
+Never impute, never zero-fill. A missing or invalid input yields NULL plus a
+reason in `missing_fields_json`.
+
+| Metric | Invalid when | Special value |
+|---|---|---|
+| P/E | earnings ≤ 0 | — |
+| P/B | book value ≤ 0 | — |
+| EV/EBITDA | EBITDA ≤ 0 | — |
+| ROIC | invested capital ≤ 0 | — |
+| Interest coverage | debt > 0 and interest missing | cap 50 when debt = 0 |
+| Debt/EBITDA | EBITDA ≤ 0 | 0 when debt = 0 |
+| Current ratio | current liabilities = 0 | capped at 5.0 |
+
+`Input.__bool__` raises on purpose: a zero value is *present*, and truthiness
+would silently treat it as missing.
+
+### Point-in-time market cap
+
+`dei:EntityCommonStockSharesOutstanding` is a cover-page instant dated when the
+filing was prepared, not at the fiscal period end, so matching it to the period
+almost never hits. Market cap is specified as point-in-time, so the share count
+is the latest one knowable at the knowledge date, priced from the corresponding
+raw close.
+
+Multi-class issuers are genuinely ambiguous — one class's share count times that
+class's price is not the whole company. The inputs, a confidence state and an
+ambiguity reason are all stored, and the figure is never presented as exact.
+
+### Model applicability
+
+SIC division H (6000–6799) — banks, insurers, other financials and REITs — get
+`model_applicable = false` and are never ranked. EV/EBITDA is meaningless when
+debt is raw material rather than financing, and a current ratio has no
+interpretation for a balance sheet with no operating cycle.
+
+Excluded in the fixture: JPM, USB (6021), O, PLD, ABR$D (6798), BRK.B (6331),
+VAC (6531). VAC is a timeshare operator whose SIC says real estate; the rule is
+applied as written rather than maintaining an exception list.
+
 ## Data sources
 
 Both were verified against live responses on 2026-07-29.

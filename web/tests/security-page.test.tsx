@@ -153,7 +153,7 @@ describe("security page", () => {
     for (const section of [
       "Prices",
       "Corporate actions",
-      "Derived fundamentals",
+      "Fundamentals",
       "Universe membership",
       "Signals",
     ]) {
@@ -224,6 +224,14 @@ describe("security page", () => {
     const html = await renderSecurityPage("7");
     expect(html).toContain("Known limitation");
     expect(html).toContain("decimals");
+  });
+
+  it("shows a NULL metric as 'not available', never as zero", async () => {
+    const html = await renderSecurityPage("7");
+    // This security has no derived_fundamentals row at all, so the panel shows
+    // its empty state rather than a table of zeros.
+    expect(html).toContain("Fundamentals");
+    expect(html).not.toMatch(/>0\.00</);
   });
 
   it("shows a warrant as not rankable, for the security-type reason", async () => {

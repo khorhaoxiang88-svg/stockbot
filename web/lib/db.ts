@@ -439,6 +439,54 @@ export function getPayloadSummary() {
   return { status: result.status, row: result.rows[0] ?? null };
 }
 
+export const SCALAR_METRICS = [
+  "pe", "pb", "ev_ebitda", "fcf_yield", "roic", "interest_coverage",
+  "debt_ebitda", "current_ratio", "gross_margin", "revenue_growth_yoy",
+  "shares_outstanding",
+] as const;
+
+export const PIOTROSKI_METRICS = [
+  "piotroski_roa_positive", "piotroski_cfo_positive", "piotroski_roa_improved",
+  "piotroski_accruals", "piotroski_leverage_decreased",
+  "piotroski_current_ratio_improved", "piotroski_no_new_shares",
+  "piotroski_gross_margin_improved", "piotroski_asset_turnover_improved",
+] as const;
+
+export type MetricName =
+  | (typeof SCALAR_METRICS)[number]
+  | (typeof PIOTROSKI_METRICS)[number];
+
+export type DerivedFundamentals = Record<string, string | number | null>;
+
+export function getFundamentalPeriods(securityId: number) {
+  return readAll<{ period_end: string; knowledge_date: string; states: number }>(
+    "derived_fundamentals",
+    `SELECT period_end, MAX(knowledge_date) AS knowledge_date, COUNT(*) AS states
+       FROM derived_fundamentals WHERE security_id = ${Number(securityId) || 0}
+      GROUP BY period_end ORDER BY period_end DESC`,
+  );
+}
+
+export function getLatestFundamentals(securityId: number) {
+  const result = readAll<DerivedFundamentals>(
+    "derived_fundamentals",
+    `SELECT * FROM derived_fundamentals WHERE security_id = ${Number(securityId) || 0}
+      ORDER BY period_end DESC, knowledge_date DESC LIMIT 1`,
+  );
+  return { status: result.status, row: result.rows[0] ?? null };
+}
+
+/** Every knowledge state for one period, oldest first. An amendment adds a row. */
+export function getKnowledgeStates(securityId: number, periodEnd: string) {
+  return readAll<DerivedFundamentals>(
+    "derived_fundamentals",
+    `SELECT * FROM derived_fundamentals
+      WHERE security_id = ${Number(securityId) || 0}
+        AND period_end = '${periodEnd.replace(/'/g, "")}'
+      ORDER BY knowledge_date`,
+  );
+}
+
 /** SIC codes the fixture cares about naming. Mirrors classify.industry_label. */
 export function industryLabel(sicCode: string | null): string | null {
   if (!sicCode) return null;
