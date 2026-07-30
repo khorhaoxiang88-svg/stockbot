@@ -26,6 +26,7 @@ import {
 import {
   getCorporateActions,
   getCurrentDatasetVersion,
+  getDilutionSignal,
   getFacts,
   getFactsBySemanticHash,
   getFactsSummary,
@@ -43,6 +44,7 @@ import {
   getRestatements,
   getSecurityById,
   industryLabel,
+  type DilutionEvidence,
   PIOTROSKI_METRICS,
   SCALAR_METRICS,
 } from "@/lib/db";
@@ -232,6 +234,24 @@ export default async function SecurityPage({
     M: "option exercise",
     F: "tax withholding",
     G: "gift",
+  };
+
+  const dilution = getDilutionSignal(securityId);
+  const dilutionEvidence: DilutionEvidence[] = dilution.row?.evidence_json
+    ? JSON.parse(dilution.row.evidence_json)
+    : [];
+  const TIER_LABEL: Record<string, string> = {
+    D1: "D1 capacity",
+    D2: "D2 issuance",
+    D3: "D3 structural",
+  };
+  const OUTCOME_STYLE: Record<string, string> = {
+    equity_offering: "text-amber-200",
+    atm_programme: "text-amber-200",
+    variable_convertible: "text-red-200",
+    shelf_415: "text-sky-200",
+    debt_or_structured: "text-muted-foreground",
+    unknown: "text-muted-foreground",
   };
 
   const currentSymbol =
@@ -1087,6 +1107,163 @@ export default async function SecurityPage({
                   </TableBody>
                 </Table>
               </details>
+            ) : null}
+          </>
+        )}
+      </section>
+
+      <section className="mb-14 space-y-6">
+        <h2>Dilution</h2>
+        {!dilution.row ? (
+          <p className="rounded-lg border border-dashed border-border px-6 py-8 text-muted-foreground">
+            No data yet. No dilution signal computed for this security.
+          </p>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-4">
+              <Badge
+                variant="outline"
+                className={
+                  dilution.row.is_disqualified
+                    ? "border-red-400/40 bg-red-400/15 px-3 py-1 text-red-200"
+                    : "border-emerald-400/40 bg-emerald-400/15 px-3 py-1 text-emerald-200"
+                }
+              >
+                score {dilution.row.dilution_score.toFixed(1)} of 30
+                {dilution.row.is_disqualified ? " — DISQUALIFIED" : ""}
+              </Badge>
+              <Badge variant="outline" className="px-3 py-1 font-mono">
+                as of {dilution.row.as_of_date}
+              </Badge>
+              <span className="text-muted-foreground">
+                share growth YoY (split-adjusted):{" "}
+                {dilution.row.shares_yoy_growth === null ? (
+                  <span className="text-amber-200">not available</span>
+                ) : (
+                  <span className="font-mono">
+                    {(dilution.row.shares_yoy_growth * 100).toFixed(1)}%
+                  </span>
+                )}
+              </span>
+            </div>
+
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Tier</TableHead>
+                  <TableHead className="text-right">Points</TableHead>
+                  <TableHead>Basis</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow>
+                  <TableCell>D1 capacity</TableCell>
+                  <TableCell className="text-right font-mono">
+                    {dilution.row.d1_capacity.toFixed(0)} / 4
+                  </TableCell>
+                  <TableCell className="text-base text-muted-foreground">
+                    unexpired qualifying shelf on file
+                  </TableCell>
+                </TableRow>
+                <TableRow>
+                  <TableCell>D2 issuance</TableCell>
+                  <TableCell className="text-right font-mono">
+                    {dilution.row.d2_issuance.toFixed(0)} / 10
+                  </TableCell>
+                  <TableCell className="text-base text-muted-foreground">
+                    qualifying 424B2/424B5 takedowns in trailing 12 months
+                  </TableCell>
+                </TableRow>
+                <TableRow>
+                  <TableCell>D3 structural</TableCell>
+                  <TableCell className="text-right font-mono">
+                    {dilution.row.d3_structural.toFixed(0)} / 8
+                  </TableCell>
+                  <TableCell className="text-base text-muted-foreground">
+                    ATM programme (4) or variable convertible (8), maximum not sum
+                  </TableCell>
+                </TableRow>
+                <TableRow>
+                  <TableCell>D4 realised</TableCell>
+                  <TableCell className="text-right font-mono">
+                    {dilution.row.d4_realised.toFixed(1)} / 12
+                  </TableCell>
+                  <TableCell className="text-base text-muted-foreground">
+                    split-adjusted share growth above the 5% floor
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+
+            <div>
+              <h3 className="mb-3">Filings considered</h3>
+              <p className="mb-3 text-base text-muted-foreground">
+                Unknown means the filing could not be established as common-equity
+                related. It scores zero and is not treated as risk.
+              </p>
+              {dilutionEvidence.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-border px-6 py-6 text-muted-foreground">
+                  No candidate filings in the window.
+                </p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Form</TableHead>
+                      <TableHead>Filed</TableHead>
+                      <TableHead>Classification</TableHead>
+                      <TableHead>Awards</TableHead>
+                      <TableHead>Reason</TableHead>
+                      <TableHead>Filing</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {dilutionEvidence.slice(0, 40).map((item) => (
+                      <TableRow key={item.accession}>
+                        <TableCell className="font-mono text-base">{item.form}</TableCell>
+                        <TableCell className="font-mono text-base">
+                          {item.filed_date}
+                        </TableCell>
+                        <TableCell className={OUTCOME_STYLE[item.outcome] ?? ""}>
+                          {item.outcome.replace(/_/g, " ")}
+                        </TableCell>
+                        <TableCell className="text-base">
+                          {item.scores && item.tier ? (
+                            <span className="text-amber-200">
+                              {TIER_LABEL[item.tier] ?? item.tier}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">no points</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-base text-muted-foreground">
+                          {item.reason}
+                        </TableCell>
+                        <TableCell className="text-base">
+                          {item.url ? (
+                            <a
+                              href={item.url}
+                              className="font-mono underline underline-offset-4"
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {item.accession}
+                            </a>
+                          ) : (
+                            <span className="font-mono">{item.accession}</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </div>
+
+            {dilution.row.classification_notes ? (
+              <p className="text-base text-muted-foreground">
+                {dilution.row.classification_notes.split(" | ")[0]}
+              </p>
             ) : null}
           </>
         )}

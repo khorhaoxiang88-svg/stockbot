@@ -536,3 +536,67 @@ Two gotchas confirmed from the live data:
   Windows. 12.x ships a prebuilt binary and installs cleanly.
 - `next.config.ts` lists `better-sqlite3` under `serverExternalPackages` so the
   native module is loaded by Node instead of being bundled.
+
+## Dilution (migration 008)
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/dilution/compute.py
+```
+
+**Numbering:** the F7 brief called this "migration 007", but 007
+(`amendment_link_nullable`) was already applied in F6. Editing an applied
+migration is forbidden, so the table is **008**. Contents unchanged.
+
+### Gates run before any point is awarded
+
+The fixture holds **126,659 424B2 filings across 39 issuers**, overwhelmingly
+bank medium-term notes and structured notes. Counting 424B2 filings without
+classifying them would disqualify JPMorgan and US Bancorp for issuing debt,
+while the genuinely dilutive small caps file fewer than ten each.
+
+`pipeline/dilution/classify.py` therefore establishes what a filing IS before it
+can score: `equity_offering`, `atm_programme`, `variable_convertible`,
+`shelf_415`, `debt_or_structured` (zero), or `unknown` (zero).
+
+**Unknown is not risk.** It is absence of evidence and never produces penalty
+points.
+
+**Debt is tested first.** A note prospectus routinely mentions common stock — as
+a structured note's reference asset, or in Plan of Distribution boilerplate.
+Testing equity language first classified Merck's shelf boilerplate as an ATM
+programme. Only genuinely floating conversion terms override a debt
+classification, because a variable-priced convertible really is dilutive.
+
+The `_ATM` pattern requires the phrase to be tied to a programme AND to common
+equity within a bounded window; bare "at-the-market" is boilerplate.
+
+### Frozen formula
+
+D1 capacity 0-4, D2 issuance 0-10 (1 filing 4, 2 filings 7, 3+ filings 10),
+D3 structural 0-8 (ATM 4, variable convertible 8, maximum not sum),
+D4 realised `12 * clamp((g - 0.05) / 0.35, 0, 1)` on SPLIT-ADJUSTED share growth.
+`score = min(30, ΣD)`, `is_disqualified = score >= 22`.
+
+Three invariants are database CHECKs, not conventions: the score equals the
+formula, disqualification equals the threshold, and `D2 + D4 > 0` is required to
+disqualify — so capacity alone can never disqualify (D1 + D3 max at 12).
+
+Share growth restates the earlier count onto the later split basis, so a 2-for-1
+split reads as 0% growth, not 100% dilution. Spin-off factors (filed by
+migration 003 as `other` with `requires_manual_review`) never restate a count.
+
+### KNOWN FORMULA LIMITATION — for Phase S calibration review
+
+**GNS scores 16 and is NOT disqualified despite +148.2% split-adjusted share
+growth.** D4 caps at 12, and with one qualifying takedown (D2=4) and no shelf or
+ATM detected, 16 is its ceiling against a threshold of 22. A company that grew
+its share count roughly 2.5x in a year passes.
+
+The formula is frozen and was deliberately left unchanged. **F9's
+`rapid_share_growth` flag must surface this growth prominently regardless of
+composite score**, so a diluter of this shape is visible even when the dilution
+score does not disqualify it.
+
+Related: **PHUN scores 4** despite being the fixture's designated diluter — its
+14 424B5 filings all predate the 12-month D2 window (most recent 2024-11-01).
+D2 is a trailing-12-month measure by design.

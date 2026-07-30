@@ -1,0 +1,1 @@
+"""Common-equity dilution detection."""

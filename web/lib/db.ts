@@ -558,6 +558,42 @@ export function getInsiderClusterSummary(securityId: number) {
   return { status: result.status, row: result.rows[0] ?? null };
 }
 
+export type DilutionSignal = {
+  as_of_date: string;
+  shares_yoy_growth: number | null;
+  d1_capacity: number;
+  d2_issuance: number;
+  d3_structural: number;
+  d4_realised: number;
+  dilution_score: number;
+  is_disqualified: number;
+  evidence_json: string | null;
+  classification_notes: string | null;
+};
+
+export type DilutionEvidence = {
+  accession: string;
+  form: string;
+  filed_date: string;
+  url: string | null;
+  outcome: string;
+  reason: string;
+  scores: boolean;
+  tier: string | null;
+  unexpired?: boolean;
+};
+
+export function getDilutionSignal(securityId: number) {
+  const result = readAll<DilutionSignal>(
+    "dilution_signals",
+    `SELECT as_of_date, shares_yoy_growth, d1_capacity, d2_issuance, d3_structural,
+            d4_realised, dilution_score, is_disqualified, evidence_json, classification_notes
+       FROM dilution_signals WHERE security_id = ${Number(securityId) || 0}
+      ORDER BY as_of_date DESC LIMIT 1`,
+  );
+  return { status: result.status, row: result.rows[0] ?? null };
+}
+
 /** SIC codes the fixture cares about naming. Mirrors classify.industry_label. */
 export function industryLabel(sicCode: string | null): string | null {
   if (!sicCode) return null;

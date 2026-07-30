@@ -154,6 +154,7 @@ describe("security page", () => {
       "Prices",
       "Corporate actions",
       "Fundamentals",
+      "Dilution",
       "Insider transactions",
       "Universe membership",
       "Signals",
@@ -162,7 +163,7 @@ describe("security page", () => {
     }
     // This fixture security has no price rows, so Prices and Corporate actions
     // show their own empty states alongside the three not-yet-built sections.
-    expect(html.match(/No data yet/g)?.length).toBe(6);
+    expect(html.match(/No data yet/g)?.length).toBe(7);
   });
 
   it("shows the price dataset panel even with no bars", async () => {
