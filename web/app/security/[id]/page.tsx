@@ -31,6 +31,9 @@ import {
   getFactsSummary,
   getFixtureEntryFor,
   getFundamentalPeriods,
+  getInsiderClusterSummary,
+  getInsiderTableOne,
+  getInsiderTableTwo,
   getKnowledgeStates,
   getLatestFundamentals,
   getListingsFor,
@@ -206,6 +209,29 @@ export default async function SecurityPage({
     if (name === "shares_outstanding") return compactNumber(numeric);
     if (RATIO_METRICS.has(name)) return (numeric * 100).toFixed(2) + "%";
     return numeric.toFixed(2);
+  };
+
+  const insiderTableOne = getInsiderTableOne(securityId, 80);
+  const insiderTableTwo = getInsiderTableTwo(securityId, 40);
+  const insiderCluster = getInsiderClusterSummary(securityId);
+
+  const PLAN_STYLE: Record<string, string> = {
+    confirmed_10b5_1: "text-sky-200",
+    discretionary: "text-emerald-200",
+    unknown: "text-amber-200",
+  };
+  const PLAN_LABEL: Record<string, string> = {
+    confirmed_10b5_1: "10b5-1 plan",
+    discretionary: "discretionary",
+    unknown: "unknown",
+  };
+  const CODE_LABEL: Record<string, string> = {
+    P: "open-market purchase",
+    S: "sale",
+    A: "grant",
+    M: "option exercise",
+    F: "tax withholding",
+    G: "gift",
   };
 
   const currentSymbol =
@@ -883,6 +909,184 @@ export default async function SecurityPage({
                   .map((entry) => entry.period_end + " (" + entry.states + " states)")
                   .join(", ")}
               </p>
+            ) : null}
+          </>
+        )}
+      </section>
+
+      <section className="mb-14 space-y-6">
+        <h2>Insider transactions</h2>
+        {insiderTableOne.rows.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-border px-6 py-8 text-muted-foreground">
+            No data yet. No Form 4 filings ingested for this security.
+          </p>
+        ) : (
+          <>
+            {insiderCluster.row && insiderCluster.row.purchases > 0 ? (
+              <div className="rounded-xl border border-emerald-400/30 bg-emerald-400/5 p-6">
+                <p className="font-medium text-emerald-100">
+                  {insiderCluster.row.purchasers} distinct insiders made{" "}
+                  {insiderCluster.row.purchases} open-market purchases
+                </p>
+                <p className="text-base text-muted-foreground">
+                  {insiderCluster.row.first_date} to {insiderCluster.row.last_date}
+                  {insiderCluster.row.total_value
+                    ? ", " + compactNumber(Number(insiderCluster.row.total_value)) + " total"
+                    : ""}
+                  . Only Table I code P counts; grants and exercises are excluded.
+                </p>
+              </div>
+            ) : null}
+
+            <div className="flex flex-wrap items-center gap-5 text-base text-muted-foreground">
+              <span>Plan status:</span>
+              <span className="text-emerald-200">discretionary</span>
+              <span className="text-sky-200">10b5-1 plan</span>
+              <span className="text-amber-200">unknown (not determinable)</span>
+              <span className="ml-4">Rows struck through are superseded by an amendment.</span>
+            </div>
+
+            <div>
+              <h3 className="mb-3">Table I — non-derivative (the only table scored)</h3>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Insider</TableHead>
+                    <TableHead>Code</TableHead>
+                    <TableHead className="text-right">Shares</TableHead>
+                    <TableHead className="text-right">Price</TableHead>
+                    <TableHead className="text-right">Value</TableHead>
+                    <TableHead>Plan</TableHead>
+                    <TableHead>Filing</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {insiderTableOne.rows.map((tx) => {
+                    const superseded = tx.superseded_by_accession !== null;
+                    const isPurchase = tx.transaction_code === "P";
+                    return (
+                      <TableRow
+                        key={tx.accession_no + "-" + tx.line_no}
+                        className={superseded ? "opacity-45" : undefined}
+                      >
+                        <TableCell className="font-mono text-base">
+                          {tx.transaction_date ?? "not available"}
+                        </TableCell>
+                        <TableCell>
+                          {tx.insider_name}
+                          {tx.officer_title ? (
+                            <span className="ml-2 text-base text-muted-foreground">
+                              {tx.officer_title}
+                            </span>
+                          ) : null}
+                        </TableCell>
+                        <TableCell>
+                          <span
+                            className={
+                              isPurchase
+                                ? "rounded bg-emerald-400/20 px-2 py-1 font-mono text-emerald-100"
+                                : "font-mono text-muted-foreground"
+                            }
+                          >
+                            {tx.transaction_code}
+                          </span>
+                          <span className="ml-2 text-base text-muted-foreground">
+                            {CODE_LABEL[tx.transaction_code ?? ""] ?? ""}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {tx.shares === null ? "not available" : compactNumber(tx.shares)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {tx.price_per_share === null
+                            ? "not available"
+                            : tx.price_per_share.toFixed(2)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {tx.total_value === null
+                            ? "not available"
+                            : compactNumber(tx.total_value)}
+                        </TableCell>
+                        <TableCell className={PLAN_STYLE[tx.plan_status]}>
+                          {PLAN_LABEL[tx.plan_status]}
+                          <span className="ml-1 text-base text-muted-foreground">
+                            ({tx.plan_status_source})
+                          </span>
+                        </TableCell>
+                        <TableCell className="font-mono text-base">
+                          {superseded ? (
+                            <span className="text-amber-200">
+                              superseded by {tx.superseded_by_accession}
+                            </span>
+                          ) : tx.is_amendment ? (
+                            <span>
+                              {tx.accession_no}{" "}
+                              <span className="text-sky-200">
+                                (amends {tx.amends_accession})
+                              </span>
+                            </span>
+                          ) : (
+                            tx.accession_no
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+
+            {insiderTableTwo.rows.length > 0 ? (
+              <details className="rounded-xl border border-border bg-card p-6">
+                <summary className="cursor-pointer font-medium">
+                  Table II — derivative ({insiderTableTwo.rows.length} rows).{" "}
+                  <span className="text-amber-200">Not scored.</span>
+                </summary>
+                <p className="mt-3 text-base text-muted-foreground">
+                  Options, warrants and other derivatives. Stored for completeness and
+                  deliberately excluded from every scored set, including code P.
+                </p>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Date</TableHead>
+                      <TableHead>Insider</TableHead>
+                      <TableHead>Code</TableHead>
+                      <TableHead className="text-right">Shares</TableHead>
+                      <TableHead className="text-right">Price</TableHead>
+                      <TableHead>Filing</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {insiderTableTwo.rows.map((tx) => (
+                      <TableRow
+                        key={tx.accession_no + "-" + tx.line_no}
+                        className={
+                          tx.superseded_by_accession !== null ? "opacity-45" : undefined
+                        }
+                      >
+                        <TableCell className="font-mono text-base">
+                          {tx.transaction_date ?? "not available"}
+                        </TableCell>
+                        <TableCell>{tx.insider_name}</TableCell>
+                        <TableCell className="font-mono text-muted-foreground">
+                          {tx.transaction_code}
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {tx.shares === null ? "not available" : compactNumber(tx.shares)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono">
+                          {tx.price_per_share === null
+                            ? "not available"
+                            : tx.price_per_share.toFixed(2)}
+                        </TableCell>
+                        <TableCell className="font-mono text-base">{tx.accession_no}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </details>
             ) : null}
           </>
         )}

@@ -487,6 +487,77 @@ export function getKnowledgeStates(securityId: number, periodEnd: string) {
   );
 }
 
+export type InsiderTransaction = {
+  accession_no: string;
+  line_no: number;
+  insider_name: string | null;
+  insider_cik: string | null;
+  role_officer: number;
+  role_director: number;
+  role_ten_percent: number;
+  officer_title: string | null;
+  transaction_date: string | null;
+  filed_date: string | null;
+  accepted_at: string | null;
+  table_type: string;
+  transaction_code: string | null;
+  plan_status: string;
+  plan_status_source: string;
+  shares: number | null;
+  price_per_share: number | null;
+  total_value: number | null;
+  shares_owned_after: number | null;
+  is_amendment: number;
+  amends_accession: string | null;
+  superseded_by_accession: string | null;
+};
+
+const INSIDER_COLUMNS = `accession_no, line_no, insider_name, insider_cik, role_officer,
+  role_director, role_ten_percent, officer_title, transaction_date, filed_date, accepted_at,
+  table_type, transaction_code, plan_status, plan_status_source, shares, price_per_share,
+  total_value, shares_owned_after, is_amendment, amends_accession, superseded_by_accession`;
+
+/** Table I. Superseded rows are INCLUDED so the panel can grey them out. */
+export function getInsiderTableOne(securityId: number, limit = 80) {
+  return readAll<InsiderTransaction>(
+    "insider_transactions",
+    `SELECT ${INSIDER_COLUMNS} FROM insider_transactions
+      WHERE security_id = ${Number(securityId) || 0} AND table_type = 'I'
+      ORDER BY transaction_date DESC, accession_no, line_no
+      LIMIT ${Number.isInteger(limit) && limit > 0 ? limit : 80}`,
+  );
+}
+
+/** Table II, shown separately and never scored. */
+export function getInsiderTableTwo(securityId: number, limit = 40) {
+  return readAll<InsiderTransaction>(
+    "insider_transactions",
+    `SELECT ${INSIDER_COLUMNS} FROM insider_transactions
+      WHERE security_id = ${Number(securityId) || 0} AND table_type = 'II'
+      ORDER BY transaction_date DESC, accession_no, line_no
+      LIMIT ${Number.isInteger(limit) && limit > 0 ? limit : 40}`,
+  );
+}
+
+/** Distinct insiders with a scored open-market purchase, for cluster detection. */
+export function getInsiderClusterSummary(securityId: number) {
+  const result = readAll<{
+    purchasers: number;
+    purchases: number;
+    first_date: string | null;
+    last_date: string | null;
+    total_value: number | null;
+  }>(
+    "insider_transactions",
+    `SELECT COUNT(DISTINCT insider_cik) AS purchasers, COUNT(*) AS purchases,
+            MIN(transaction_date) AS first_date, MAX(transaction_date) AS last_date,
+            SUM(total_value) AS total_value
+       FROM scored_insider_purchases
+      WHERE security_id = ${Number(securityId) || 0}`,
+  );
+  return { status: result.status, row: result.rows[0] ?? null };
+}
+
 /** SIC codes the fixture cares about naming. Mirrors classify.industry_label. */
 export function industryLabel(sicCode: string | null): string | null {
   if (!sicCode) return null;

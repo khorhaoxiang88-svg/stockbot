@@ -446,6 +446,56 @@ Excluded in the fixture: JPM, USB (6021), O, PLD, ABR$D (6798), BRK.B (6331),
 VAC (6531). VAC is a timeshare operator whose SIC says real estate; the rule is
 applied as written rather than maintaining an exception list.
 
+## Insider transactions (migration 006)
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/insider/ingest.py --since 2015-01-01
+```
+
+### Table I vs Table II
+
+Table I (non-derivative) and Table II (derivative) are different instruments.
+Both are stored and `table_type` distinguishes them, but **only Table I is ever
+scored**. A Table II code P is a derivative purchase, not shares bought on the
+open market, so `scored_insider_purchases` excludes it.
+
+### Transaction codes
+
+All codes are stored verbatim. **Only P is scored as a purchase.** A grant (A)
+or an option exercise (M) is not cash conviction, and counting either as a
+purchase would manufacture the exact edge this system claims to measure.
+
+The rule lives in one view, `scored_insider_purchases` — Table I, code P,
+superseded rows excluded — so no query can invent its own definition.
+
+### Plan status is never guessed
+
+`plan_status` is `discretionary`, `confirmed_10b5_1` or `unknown`, and
+`plan_status_source` records how it was decided.
+
+The Rule 10b5-1 checkbox (`aff10b5One`) is a recent addition to Form 4.
+Verified 2026-07-30: present in all 14 modern filings sampled, **absent** from a
+2018 amendment. Resolution order:
+
+1. checkbox present → `confirmed_10b5_1` if set, `discretionary` if clear, source `checkbox`
+2. otherwise footnote text → `confirmed_10b5_1`, or `discretionary` when the
+   footnote *denies* a plan ("not made pursuant to a Rule 10b5-1 plan"), source `footnote`
+3. otherwise `unknown`, source `absent`
+
+A database CHECK enforces that `unknown` carries `absent` and that a determined
+status never does, so a default can't creep in through a later code path.
+
+### Amendments supersede, they do not delete
+
+A 4/A sets `superseded_by_accession` on the original rows. **The original is
+retained.** Reads filter through `effective_insider_transactions` or
+`scored_insider_purchases`, so a corrected filing is counted once, never twice
+and never zero times.
+
+A 4/A carries `dateOfOriginalSubmission` but **not** the original's accession, so
+the link is derived from (security, insider, period of report) filed on or
+before the amendment.
+
 ## Data sources
 
 Both were verified against live responses on 2026-07-29.
