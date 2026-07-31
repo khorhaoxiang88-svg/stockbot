@@ -157,12 +157,12 @@ describe("security page", () => {
       "Dilution",
       "Insider transactions",
       "Universe membership",
-      "Signals",
+      "Composite score",
     ]) {
       expect(html).toContain(section);
     }
     // This fixture security has no price rows, so Prices and Corporate actions
-    // show their own empty states alongside the three not-yet-built sections.
+    // show their own empty states alongside the sections with no rows at all.
     expect(html.match(/No data yet/g)?.length).toBe(7);
   });
 

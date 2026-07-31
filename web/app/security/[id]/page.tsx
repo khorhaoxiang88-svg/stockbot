@@ -18,6 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { PriceChart, type ChartMarker } from "@/components/price-chart";
+import { ScoreBreakdown } from "@/components/score-breakdown";
 import {
   adjustedSeries,
   largestSingleDayMove,
@@ -41,9 +42,12 @@ import {
   getPriceRevisions,
   getPrices,
   getProvenance,
+  getRankedCount,
   getRestatements,
+  getScore,
   getSecurityById,
   industryLabel,
+  parseExplanation,
   type DilutionEvidence,
   PIOTROSKI_METRICS,
   SCALAR_METRICS,
@@ -235,6 +239,10 @@ export default async function SecurityPage({
     F: "tax withholding",
     G: "gift",
   };
+
+  const score = getScore(securityId);
+  const scoreExplanation = parseExplanation(score.row?.explanation_json ?? null);
+  const rankedCount = score.row ? getRankedCount(score.row.score_date) : 0;
 
   const dilution = getDilutionSignal(securityId);
   const dilutionEvidence: DilutionEvidence[] = dilution.row?.evidence_json
@@ -1269,16 +1277,40 @@ export default async function SecurityPage({
         )}
       </section>
 
-      <div className="grid gap-10 md:grid-cols-2">
-        <EmptySection
-          title="Universe membership"
-          note="No data yet. Universe snapshots arrive in a later phase."
+      {score.row && scoreExplanation ? (
+        <ScoreBreakdown
+          score={score.row}
+          explanation={scoreExplanation}
+          rankedCount={rankedCount}
         />
+      ) : (
         <EmptySection
-          title="Signals"
-          note="No data yet. Scoring arrives in a later phase."
+          title="Composite score"
+          note="No data yet. Run pipeline/scoring/compute.py to score this security."
         />
-      </div>
+      )}
+
+      <section className="mb-14 space-y-4">
+        <h2>Universe membership</h2>
+        {scoreExplanation ? (
+          <dl className="rounded-lg border border-border px-6">
+            <Field label="Official snapshot">
+              <span className="font-mono">{scoreExplanation.snapshot_id}</span>
+            </Field>
+            <Field label="Status">
+              {score.row?.rankable === 1 ? "included and ranked" : "not ranked"}
+            </Field>
+            <Field label="Cohort">
+              <span className="font-mono">{scoreExplanation.cohort_id}</span>{" "}
+              {scoreExplanation.cohort_label}
+            </Field>
+          </dl>
+        ) : (
+          <p className="rounded-lg border border-dashed border-border px-6 py-8 text-muted-foreground">
+            No data yet. No official universe snapshot covers this security.
+          </p>
+        )}
+      </section>
     </main>
   );
 }

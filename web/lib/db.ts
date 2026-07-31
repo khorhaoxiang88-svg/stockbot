@@ -594,6 +594,165 @@ export function getDilutionSignal(securityId: number) {
   return { status: result.status, row: result.rows[0] ?? null };
 }
 
+export type ScoreRow = {
+  security_id: number;
+  score_date: string;
+  strategy_version: number;
+  config_hash: string;
+  mapping_version: string;
+  price_dataset_version: number | null;
+  price_snapshot_hash: string | null;
+  value_score: number | null;
+  quality_score: number | null;
+  momentum_score: number | null;
+  insider_bonus: number | null;
+  dilution_penalty: number;
+  composite_score: number | null;
+  rank: number | null;
+  cohort_id: string | null;
+  rankable: number;
+  withhold_reason: string | null;
+  explanation_json: string;
+};
+
+/**
+ * Submetric rows are what makes a score checkable by hand: nominal weight,
+ * whether it was valid, the EFFECTIVE weight after renormalisation, which
+ * population it was ranked against, and the resulting contribution.
+ */
+export type ScoreSubmetric = {
+  metric: string;
+  kind: "percentile" | "absolute";
+  nominal_weight: number;
+  effective_weight: number;
+  valid: boolean;
+  reason?: string | null;
+  raw_value: number | null;
+  percentile?: number | null;
+  value_used: number | null;
+  contribution: number | null;
+  lower_is_better?: boolean;
+  comparison?: {
+    market_population: string;
+    market_count: number;
+    market_percentile: number | null;
+    cohort_population: string | null;
+    cohort_count: number;
+    cohort_percentile: number | null;
+    blend_weight_w: number;
+    knowledge_cutoff: string;
+    snapshot_id: string;
+  };
+  detail?: Record<string, unknown> | null;
+};
+
+export type ScoreComponent = {
+  component: string;
+  renormalised_share: number;
+  effective_weight_sum: number;
+  submetrics: ScoreSubmetric[];
+};
+
+export type PiotroskiSignal = {
+  signal: string;
+  test: string;
+  passed: boolean | null;
+  points: number | null;
+  concept_used: string | null;
+  accession: string | null;
+};
+
+export type ScoreExplanation = {
+  security_id: number;
+  symbol: string;
+  name: string;
+  score_date: string;
+  knowledge_cutoff?: string;
+  snapshot_id: string;
+  cohort_id: string | null;
+  cohort_label: string | null;
+  cohort_basis?: string;
+  universe_status?: string;
+  provenance?: Record<string, unknown>;
+  components?: Record<
+    string,
+    {
+      weight: number;
+      score: number | null;
+      gate: string;
+      population?: string;
+      piotroski?: {
+        complete: boolean;
+        f_score: number | null;
+        max_f_score: number;
+        value_used: number | null;
+        formula: string;
+        period_end: string | null;
+        prior_period_end: string | null;
+        reason: string | null;
+        signals: PiotroskiSignal[];
+      };
+      detail: ScoreComponent;
+    }
+  >;
+  insider_bonus?: {
+    value: number | null;
+    formula: string;
+    coverage: { complete: boolean; reason: string; note: string };
+    qualifying_definition: string;
+    qualifying_purchases: number;
+    b1_cluster: Record<string, unknown>;
+    b2_executive: Record<string, unknown>;
+    b3_size: Record<string, unknown>;
+    b4_conviction: Record<string, unknown>;
+    sum_before_cap: number;
+  };
+  dilution_penalty?: Record<string, unknown>;
+  composite?: {
+    formula: string;
+    terms?: { term: string; weight: number; component: number; contribution: number }[];
+    unclamped?: number;
+    clamped?: number;
+  };
+  rankable: boolean;
+  withhold_reason: string | null;
+  altman_z_note?: string;
+  winsorisation_note?: string;
+};
+
+/** The most recent stored score for one security. */
+export function getScore(securityId: number) {
+  const result = readAll<ScoreRow>(
+    "scores",
+    `SELECT security_id, score_date, strategy_version, config_hash, mapping_version,
+            price_dataset_version, price_snapshot_hash, value_score, quality_score,
+            momentum_score, insider_bonus, dilution_penalty, composite_score,
+            "rank", cohort_id, rankable, withhold_reason, explanation_json
+       FROM scores WHERE security_id = ${Number(securityId) || 0}
+      ORDER BY score_date DESC, strategy_version DESC LIMIT 1`,
+  );
+  return { status: result.status, row: result.rows[0] ?? null };
+}
+
+/** How many securities were ranked on the same date, for "rank N of M". */
+export function getRankedCount(scoreDate: string) {
+  const safe = String(scoreDate).replace(/[^0-9-]/g, "");
+  const result = readAll<{ n: number }>(
+    "scores",
+    `SELECT COUNT(*) AS n FROM scores WHERE rankable = 1 AND score_date = '${safe}'`,
+  );
+  return result.rows[0]?.n ?? 0;
+}
+
+export function parseExplanation(json: string | null): ScoreExplanation | null {
+  if (!json) return null;
+  try {
+    return JSON.parse(json) as ScoreExplanation;
+  } catch {
+    return null;
+  }
+}
+
 /** SIC codes the fixture cares about naming. Mirrors classify.industry_label. */
 export function industryLabel(sicCode: string | null): string | null {
   if (!sicCode) return null;
