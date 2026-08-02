@@ -1,19 +1,22 @@
 # stockbot
 
-US stock research system. Phases F1–F10 are built and committed: identity,
+US stock research system. Phases F1–F11 are built and committed: identity,
 classification, prices, SEC facts, derived fundamentals, insider transactions,
-dilution, the composite score, the risk-flag panel, and weekly candidate
-selection with the two simulated books.
+dilution, the composite score, the risk-flag panel, weekly candidate selection
+with the two simulated books, and execution under a frozen protocol.
 
 What exists right now:
 
-- a Python pipeline with nine ingest and compute stages,
-- twelve applied migrations over a SQLite database,
+- a Python pipeline with ten ingest and compute stages,
+- thirteen applied migrations over a SQLite database,
 - a frozen, version-governed configuration file for Release 1,
-- a Next.js web app with a `/health` page and a `/security/[id]` page carrying
+- a Next.js web app with a `/health` page, a `/security/[id]` page carrying
   identity, price charts, an XBRL fact browser, fundamentals, insider activity,
-  dilution, the full composite score breakdown and the risk panel, plus a
-  `/candidates` page carrying the weekly selection and its suppression log.
+  dilution, the full composite score breakdown and the risk panel, a
+  `/candidates` page carrying the weekly selection and its suppression log, and
+  a `/performance` page reporting execution results per horizon.
+- the "Engineering validation dataset — not strategy performance" banner on
+  every page, in the root layout.
 
 The fixture is 50 securities. Current contents: 34,593 price bars, 474
 corporate actions, 1,103,138 XBRL facts across 3,034 payloads, 748 derived
@@ -21,7 +24,8 @@ fundamentals, 6,788 insider rows (198 scored purchases), 50 dilution signals,
 50 composite scores (16 rankable) and 650 risk flags. The current weekly
 selection produces zero candidates, which is the correct result: the price
 ingest is outside its freshness SLA and `composite_threshold` is still the
-declared null placeholder. Both are recorded in the suppression log.
+declared null placeholder. Both are recorded in the suppression log, and F11's
+execution run is therefore a correct no-op — there is nothing to execute yet.
 
 ---
 
@@ -51,16 +55,20 @@ stockbot/
                           going-concern phrase detector.
     selection/            The trading-week calendar, freshness gates, the
                           selection rule, and the two books.
+    execution/            R1-PROTOCOL-1.1: entry, slippage, corporate actions
+                          mid-hold, exits, and delisting resolution.
     tests/                pytest suite.
   data/                   SQLite database and raw payloads. Never committed.
     stockbot.db
     raw/                  Raw source payloads land here, one folder per source.
   web/                    Next.js 15 App Router, TypeScript, Tailwind, shadcn/ui.
+    app/layout.tsx         Root layout; renders the Phase F banner on every page.
     app/health/page.tsx   The health page.
     app/security/[id]/    The per-security page.
     app/candidates/       This week's selection and the suppression log.
-    components/           Price chart, score breakdown, risk panel.
-    lib/                  db, config, adjust, rank, paths, time helpers.
+    app/performance/      Execution results, per horizon, never pooled.
+    components/           Phase banner, price chart, score breakdown, risk panel.
+    lib/                  db, config, adjust, rank, performance, paths, time helpers.
     tests/                vitest suite.
 ```
 
@@ -186,15 +194,18 @@ pipeline/.venv/Scripts/python.exe pipeline/dilution/compute.py
 pipeline/.venv/Scripts/python.exe pipeline/scoring/compute.py --as-of 2026-07-29
 pipeline/.venv/Scripts/python.exe pipeline/riskflags/compute.py --as-of 2026-07-30
 pipeline/.venv/Scripts/python.exe pipeline/selection/compute.py --as-of 2026-08-02
+pipeline/.venv/Scripts/python.exe pipeline/execution/compute.py --as-of 2026-08-02
 ```
 
-The last three take different as-of dates on purpose. A score belongs to a
+The last four take different as-of dates on purpose. A score belongs to a
 trading session, so `scoring` snaps back to the last session. A risk flag is a
 statement about filings and accounts, which arrive on calendar days, so
 `riskflags` uses the date given verbatim - passing a session date would put the
 panel behind evidence that was already public. `selection` takes today's date
 and resolves the week itself, refusing to run for a week that is not provably
-over.
+over. `execution` also takes today's date: it is how far forward the
+walk-forward pass advances every open position, and it is independent of which
+week `selection` last ran for.
 
 `riskflags` fetches filing documents from EDGAR for the going-concern check and
 therefore needs `SEC_USER_AGENT`. Add `--no-network` to skip it; the flag then
@@ -213,7 +224,7 @@ records itself as an explicit unknown rather than as a clean result.
   ledger the runner needs, and the runner recreates it on connect. After a full
   rollback the table is still there with zero rows.
 
-The twelve applied migrations, and what each one owns:
+The thirteen applied migrations, and what each one owns:
 
 | # | Tables and views |
 |---|---|
@@ -229,6 +240,7 @@ The twelve applied migrations, and what each one owns:
 | 010 | `risk_flags` (+ `latest_risk_flags`) |
 | 011 | `research_candidates`, `suppressed_signals`, `books`, `positions` (+ `latest_selection`) |
 | 012 | rebuild of 010 to add the `overdue_issuer_filing` flag code |
+| 013 | `paper_positions`, `benchmark_positions`, `cancelled_entries`, `position_events`; drops `positions` (superseded — see below) |
 
 Migration 001 creates operations tables only. Every market-data table arrives
 from 002 onward.
@@ -1041,6 +1053,126 @@ its price or volatility, nothing compounds during Release 1, and cash earns no
 interest. They are separate simulated strategy variants, not two independent
 observations and not twice the sample. Never pool them.
 
+## Execution under R1-PROTOCOL-1.1 (migration 013)
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/execution/compute.py --as-of 2026-08-02
+```
+
+**Numbering:** the F11 brief called this "migration 011", but 011 (selection and
+books) and 012 (the `overdue_issuer_filing` flag code) were both already
+applied, so the execution tables are **013**. This migration also **supersedes
+and drops** F10's `positions` table: it was the minimum needed to express
+"at most one open position per (security, horizon)" before an execution engine
+existed to populate a real one. `paper_positions` is that real one, and keeping
+both would leave two different answers to "is a position open here". The rule
+itself now lives at the layer that decides it — selection's `open_position`
+suppression — rather than as a DB constraint on `paper_positions`, which has no
+`security_id` column of its own (only `candidate_id`, resolved through
+`research_candidates`).
+
+**Addition beyond the specified tables:** `position_events`. `dividends_received`
+and `splits_applied` on `paper_positions` are running totals, but the protocol
+requires more than totals — a dividend "accrues on the ex-date, records its
+payment date, and enters P&L from the ex-date", and the manual checklist asks
+for a split and a dividend to be traced end to end. A scalar cannot hold a date
+or a sequence, so every corporate action applied to a position is recorded here
+as it happens.
+
+### The protocol is frozen; ambiguity is not
+
+Every rule below has exactly one coded answer, because an execution engine that
+resolves an edge case however the code happened to be ordered is how a paper
+result quietly becomes fiction.
+
+- **Slippage is adverse on every fill, with no exceptions.** Entry pays up,
+  every exit — stop, target, gap-through, time-exit — gets less. A database
+  CHECK on `slippage_bps > 0` backs up what the arithmetic already guarantees.
+- **A split is never mistaken for a gap.** On an entry-session ex-date, the
+  prior close is divided by the split ratio *before* the gap test runs, so a
+  10-for-1 split's $1,200 → $120 reads as a ~0% gap, not a 90% collapse that
+  would cancel the entry outright.
+- **Stop and target come from the actual fill, never the signal close.** A
+  candidate that gaps up on entry gets its risk levels set from where it
+  actually filled; setting them from the signal close would silently move the
+  risk on every gapping trade, favourably for gaps down.
+- **Both stop and target touched in one daily bar resolves to the stop.** A
+  daily bar records that the low reached one level and the high reached the
+  other, with no record of which came first. Choosing the target would be
+  choosing the profitable interpretation of an unknowable sequence.
+- **A gap through a level exits at the open, not the level.** The stop or
+  target price was never actually available that session; claiming it would
+  manufacture (or erase) money the market never offered.
+- **On an ex-date, the action is applied before that day's OHLC is evaluated.**
+  A split scales shares up and entry/stop/target down by the same ratio *before*
+  the day's high/low are compared to them, so the split alone can never trigger
+  a false stop-out. ATR is untouched — it is frozen at entry and already
+  expressed on a post-split basis for every later ex-date, since the source
+  series F3 exposes is adjusted at read time.
+- **A dividend credits only when `entry_date < ex_date`.** A position opened ON
+  the ex-date never held the entitled share, by ordinary dividend mechanics.
+- **A spin-off, merger or special distribution freezes the position.**
+  `requires_manual_review` is set and automatic evaluation stops; nothing here
+  attempts to price a corporate action this system was not told how to handle.
+
+### Delisting is never an automatic close
+
+The one rule most likely to flatter a backtest if skipped: a delisted
+security's last quoted price may never have been executable — OTC pink sheets
+routinely print a "last sale" that nothing could actually trade at. So a
+delisting **never** closes a position. Status moves to `pending_resolution`,
+`last_evaluated_at` keeps advancing every run, and the position **stays in
+reported exposure** — the book's open-position count is not decremented — until
+one of two things happens:
+
+1. A **verified** recovery — contractually established merger consideration or
+   an executable OTC quote. Neither data source is integrated yet (there is no
+   feed for either in this fixture), so this path is implemented and unit
+   tested against constructed input, but the live run never takes it, and that
+   absence is stated rather than quietly producing a plausible number from
+   nothing.
+2. **180 days** elapse with no verified recovery. Only then does the recorded
+   resolution policy value the common equity at **zero** — the one number that
+   needs no judgement call. Rule 4 is enforced literally: no code path in this
+   module accepts a manually chosen haircut, at any percentage, from any caller.
+
+Statistics are reported both **including** pending positions at their
+provisional value and **excluding** them, so a reader can see the difference a
+still-unresolved delisting makes to the headline numbers. "Including" values
+every pending position at the recorded policy's eventual zero — the same
+number 180 days would produce — never at its notional or at any other invented
+figure; `web/lib/performance.ts:pendingAsProvisionalTrades` is the one place
+that conversion happens, and it never touches what is actually stored in
+`paper_positions`.
+
+### The benchmark is paired, never pooled with book-level results
+
+Every filled position opens a matched SPY position: identical notional,
+identical entry timestamp, closing on the same date as its pair — including a
+delisted pair's eventual zero-resolution date, so the comparison window always
+matches the primary position's true holding period. The `/performance` page
+reports the paired return **per closed trade**, in its own column, separate
+from the book-level statistics; the two are never blended into one number.
+
+### `/performance`, per horizon, never pooled
+
+Every statistic — sample size, observation window, Wilson 95% win-rate
+interval, average win/loss, profit factor, drawdown, sector concentration,
+cancellation rate, pending-resolution notional — is computed **twice**,
+independently, once for the 20-day book and once for the 60-day. Losses render
+in the identical table as wins: same columns, same styling, no separate view
+that could make a losing trade easier to look past.
+
+Drawdown is measured against the book's **fixed** starting NAV, never a moving
+peak-to-date baseline, and is reconstructed by replaying closed trades in
+exit-date order rather than from a stored NAV history table — there isn't one,
+and the ledger is sufficient to rebuild the same curve deterministically any
+time.
+
+Profit factor is reported as **undefined**, not `Infinity`, when there are no
+losing trades yet: `Infinity` reads as a number and invites being averaged or
+sorted; "undefined, no losses" cannot be misread that way.
+
 ## Traps already paid for
 
 These cost real debugging time. They are recorded so they are not rediscovered.
@@ -1060,3 +1192,16 @@ These cost real debugging time. They are recorded so they are not rediscovered.
   before scoring, and test debt language *before* equity language.
 - **`semantic_hash` excludes the CIK**, so 71,910 values are shared by more than
   one company. Always group by `(cik, semantic_hash)`.
+- **A file named `calendar.py` inside a package shadows the standard library's
+  `calendar` module** when that package is run as a script — the package
+  directory lands on `sys.path`, and `datetime.strptime` imports `calendar`
+  internally. The collision surfaces far from its cause, as `module 'calendar'
+  has no attribute 'day_abbr'`. `pipeline/selection/trading_calendar.py` is
+  named to avoid it; do not rename it back.
+- **Splitting a position mid-hold must move `entry_price`, not just stop and
+  target.** Dividing only stop and target by the split ratio leaves the stored
+  cost basis on the pre-split share count while the share count itself has
+  already grown — `gross_pnl = shares * (exit - entry)` then compares a
+  post-split share count against a pre-split entry price and manufactures a
+  return out of the split alone. All three move together, preserving the same
+  relative ordering (stop < entry < target) through the split.

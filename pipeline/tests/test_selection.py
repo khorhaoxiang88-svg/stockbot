@@ -387,42 +387,29 @@ def test_research_candidates_is_append_only():
         conn.close()
 
 
-def test_only_one_open_position_per_security_and_horizon():
+def test_paper_positions_table_exists_and_superseded_the_f10_positions_table():
+    """F11 (migration 013) replaced `positions` with the real `paper_positions`.
+
+    F10 added `positions` as the minimum needed to express "at most one open
+    position per (security, horizon)" before an execution engine existed to
+    populate a real one. That rule is now enforced by F11's selection-time
+    suppression (open_position, tested in rules.py above) rather than a DB
+    constraint on this table, because paper_positions has no security_id column
+    of its own -- it is reached through candidate_id -- so the invariant lives
+    at the layer that decides which horizons a candidate is admitted to, not as
+    a partial unique index here. `positions` itself is gone; asserting that is
+    what keeps this test from silently passing against a table nobody reads any
+    more.
+    """
     conn = _database()
     try:
-        conn.execute("BEGIN")
-        conn.execute(
-            "INSERT INTO research_candidates (candidate_id, security_id, generated_at, "
-            "data_cutoff_at, snapshot_id, pipeline_run_id, strategy_version, config_hash, "
-            "code_version, selection_rule_version, mapping_version, "
-            "source_health_snapshot_json, score_snapshot_json, accessions_used_json, "
-            "composite_at_generation, rank_at_generation, signal_close, atr_window, "
-            "price_data_cutoff, entry_rule, gap_limit_atr, row_hash) "
-            "VALUES ('c1', 1, 'x', 'x', "
-            "(SELECT snapshot_id FROM universe_snapshot_runs LIMIT 1), "
-            "(SELECT run_id FROM pipeline_runs LIMIT 1), 1, 'h', 'v', 1, '1', "
-            "'{}', '{}', '[]', 50, 1, 10, 14, '2026-07-24', 'r', 1, 'hash')"
-        )
-        conn.execute(
-            "INSERT INTO positions (position_id, book_id, candidate_id, security_id, "
-            "horizon_days, status, notional, opened_on) "
-            "VALUES ('p1', 'book-20d', 'c1', 1, 20, 'open', 1000, '2026-07-27')"
-        )
-        # The same security at the OTHER horizon is fine.
-        conn.execute(
-            "INSERT INTO positions (position_id, book_id, candidate_id, security_id, "
-            "horizon_days, status, notional, opened_on) "
-            "VALUES ('p2', 'book-60d', 'c1', 1, 60, 'open', 1000, '2026-07-27')"
-        )
-        # A second OPEN position at the same horizon is not.
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute(
-                "INSERT INTO positions (position_id, book_id, candidate_id, security_id, "
-                "horizon_days, status, notional, opened_on) "
-                "VALUES ('p3', 'book-20d', 'c1', 1, 20, 'open', 1000, '2026-07-28')"
-            )
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='paper_positions'"
+        ).fetchone()
+        assert not conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='positions'"
+        ).fetchone()
     finally:
-        conn.execute("ROLLBACK")
         conn.close()
 
 

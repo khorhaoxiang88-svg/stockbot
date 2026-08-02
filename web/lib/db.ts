@@ -944,6 +944,120 @@ export const SUPPRESSION_LABELS: Record<string, string> = {
   selection_cap: "The weekly candidate maximum was already filled",
 };
 
+export type PaperPosition = {
+  position_id: string;
+  candidate_id: string;
+  horizon_days: number;
+  book_id: string;
+  symbol: string | null;
+  security_id: number;
+  cohort_id: string | null;
+  entry_date: string;
+  entry_price: number;
+  slippage_bps: number;
+  shares: number;
+  notional: number;
+  stop_price: number;
+  target_price: number;
+  status: string;
+  exit_date: string | null;
+  exit_price: number | null;
+  exit_reason: string | null;
+  dividends_received: number;
+  splits_applied: number;
+  gross_pnl: number | null;
+  net_pnl: number | null;
+  pnl_pct: number | null;
+  requires_manual_review: number;
+};
+
+export type BenchmarkPosition = {
+  position_id: string;
+  candidate_id: string;
+  horizon_days: number;
+  entry_date: string;
+  entry_price: number;
+  status: string;
+  exit_date: string | null;
+  exit_price: number | null;
+  net_pnl: number | null;
+  pnl_pct: number | null;
+};
+
+export type CancelledEntry = {
+  candidate_id: string;
+  symbol: string | null;
+  reason: string;
+  signal_close: number | null;
+  next_open: number | null;
+  gap_atr: number | null;
+  adjusted_basis: string;
+  cancelled_at: string;
+};
+
+/** Every paper position for one horizon, joined to the candidate's cohort and symbol. */
+export function getPaperPositions(horizonDays: number) {
+  const h = Number(horizonDays) || 0;
+  const result = readAll<PaperPosition>(
+    "paper_positions",
+    `SELECT p.position_id, p.candidate_id, p.horizon_days, p.book_id,
+            l.symbol, c.security_id,
+            json_extract(c.score_snapshot_json, '$.cohort_id') AS cohort_id,
+            p.entry_date, p.entry_price, p.slippage_bps, p.shares, p.notional,
+            p.stop_price, p.target_price, p.status, p.exit_date, p.exit_price,
+            p.exit_reason, p.dividends_received, p.splits_applied, p.gross_pnl,
+            p.net_pnl, p.pnl_pct, p.requires_manual_review
+       FROM paper_positions p
+       JOIN research_candidates c ON c.candidate_id = p.candidate_id
+       LEFT JOIN listings l ON l.security_id = c.security_id AND l.valid_to IS NULL
+      WHERE p.horizon_days = ${h}
+      ORDER BY p.entry_date, p.position_id`,
+  );
+  return { status: result.status, rows: result.rows };
+}
+
+export function getBenchmarkPositions(horizonDays: number) {
+  const h = Number(horizonDays) || 0;
+  const result = readAll<BenchmarkPosition>(
+    "benchmark_positions",
+    `SELECT position_id, candidate_id, horizon_days, entry_date, entry_price,
+            status, exit_date, exit_price, net_pnl, pnl_pct
+       FROM benchmark_positions WHERE horizon_days = ${h}
+      ORDER BY entry_date, position_id`,
+  );
+  return { status: result.status, rows: result.rows };
+}
+
+export function getCancelledEntries() {
+  const result = readAll<CancelledEntry>(
+    "cancelled_entries",
+    `SELECT ce.candidate_id, l.symbol, ce.reason, ce.signal_close, ce.next_open,
+            ce.gap_atr, ce.adjusted_basis, ce.cancelled_at
+       FROM cancelled_entries ce
+       JOIN research_candidates c ON c.candidate_id = ce.candidate_id
+       LEFT JOIN listings l ON l.security_id = c.security_id AND l.valid_to IS NULL
+      ORDER BY ce.cancelled_at DESC`,
+  );
+  return { status: result.status, rows: result.rows };
+}
+
+/** Every distinct research_candidate that entry has been attempted for at all
+ * (filled into at least one book, or cancelled) — the "unique originating
+ * candidates" count the two-books rule requires never be confused with a
+ * position count. */
+export function getUniqueOriginatingCandidateCount() {
+  const result = readAll<{ n: number }>(
+    "research_candidates",
+    `SELECT COUNT(DISTINCT candidate_id) AS n FROM (
+        SELECT candidate_id FROM paper_positions
+        UNION
+        SELECT candidate_id FROM cancelled_entries)`,
+  );
+  return result.rows[0]?.n ?? 0;
+}
+
+export const EXECUTION_PROTOCOL_VERSION = "R1-PROTOCOL-1.1";
+
 /** SIC codes the fixture cares about naming. Mirrors classify.industry_label. */
 export function industryLabel(sicCode: string | null): string | null {
   if (!sicCode) return null;
