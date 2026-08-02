@@ -145,23 +145,30 @@ def test_recorded_digest_matches_the_current_governed_values():
 
 def test_changing_a_governed_value_without_a_bump_is_refused():
     cfg = _mutable_config()
+    current = cfg["strategy_version"]
     cfg["high_leverage_debt_ebitda"] = 5.0
-    with pytest.raises(ConfigError, match="strategy_version is still 1"):
+    # Asserted against whatever the current version is, not a literal, so the
+    # test does not have to be edited every time the version legitimately moves.
+    with pytest.raises(ConfigError, match=f"strategy_version is still {current}"):
         validate_config(cfg)
 
 
 def test_bumping_without_recording_a_digest_is_refused():
     cfg = _mutable_config()
-    cfg["strategy_version"] = 2
-    with pytest.raises(ConfigError, match="no digest recorded for strategy_version=2"):
+    unrecorded = max(int(v) for v in cfg["_version_digests"]["strategy_version"]) + 1
+    cfg["strategy_version"] = unrecorded
+    with pytest.raises(
+        ConfigError, match=f"no digest recorded for strategy_version={unrecorded}"
+    ):
         validate_config(cfg)
 
 
 def test_a_bump_with_its_digest_recorded_is_accepted():
     cfg = _mutable_config()
+    nxt = str(max(int(v) for v in cfg["_version_digests"]["strategy_version"]) + 1)
     cfg["high_leverage_debt_ebitda"] = 5.0
-    cfg["strategy_version"] = 2
-    cfg["_version_digests"]["strategy_version"]["2"] = governed_digest(
+    cfg["strategy_version"] = int(nxt)
+    cfg["_version_digests"]["strategy_version"][nxt] = governed_digest(
         cfg, "strategy_version"
     )
     validate_config(cfg)  # must not raise
@@ -171,8 +178,11 @@ def test_earlier_version_digests_are_kept_as_history():
     cfg = load_config()
     # The map is a history, so a past version's meaning cannot be rewritten
     # without the change showing up in the diff.
-    assert isinstance(cfg["_version_digests"]["strategy_version"], dict)
-    assert "1" in cfg["_version_digests"]["strategy_version"]
+    digests = cfg["_version_digests"]["strategy_version"]
+    assert isinstance(digests, dict)
+    # Version 1's digest survives the bump to 2: the map only ever grows.
+    assert "1" in digests
+    assert str(cfg["strategy_version"]) in digests
 
 
 def test_canonical_value_normalises_numbers_the_way_javascript_does():
@@ -189,3 +199,31 @@ def test_governing_an_unknown_key_is_refused():
     cfg["_governed_by"]["strategy_version"] = ["not_a_real_key"]
     with pytest.raises(ConfigError, match="not required"):
         validate_config(cfg)
+
+
+def test_canonical_value_walks_objects_and_arrays():
+    # freshness_sla is a governed OBJECT. str(dict) would render "{'a': 1}" in
+    # Python and "[object Object]" in JavaScript, so the two loaders would
+    # disagree and the guard would fire on every page load.
+    assert canonical_value({"b": 2, "a": 1}) == "{a:1,b:2}"
+    assert canonical_value([1, 2.0, "x"]) == "[1,2,x]"
+    assert canonical_value({"outer": {"inner": 4.0}}) == "{outer:{inner:4}}"
+    # Key order must not matter.
+    assert canonical_value({"a": 1, "b": 2}) == canonical_value({"b": 2, "a": 1})
+
+
+def test_freshness_sla_is_governed_and_carries_the_approved_budgets():
+    cfg = load_config()
+    assert "freshness_sla" in cfg["_governed_by"]["strategy_version"]
+    sla = cfg["freshness_sla"]
+    assert sla["prices_daily"] == 72
+    assert sla["corporate_actions"] == 72
+    assert sla["filings"] == 96
+    assert sla["fundamentals"] == 720
+    assert sla["symbol_master"] == 168
+
+
+def test_nothing_is_flagged_provisional_any_more():
+    cfg = load_config()
+    outstanding = [k for k in (cfg.get("_provisional") or {}) if not k.startswith("_")]
+    assert outstanding == []

@@ -1,7 +1,7 @@
 {
   "_comment": "FROZEN for Release 1. Do not edit values without bumping the matching *_version key. Placeholders are explicitly marked null and are set in the phase named in _placeholders.",
 
-  "strategy_version": 1,
+  "strategy_version": 2,
   "selection_rule_version": 1,
   "protocol_version": 1,
   "resolution_policy_version": 1,
@@ -39,12 +39,12 @@
   "gap_cancel_cooldown_days": 3,
 
   "freshness_sla": {
-    "_units": "max_staleness_hours, measured in UTC",
+    "_units": "max_staleness_hours, measured in UTC against the moment selection runs",
     "symbol_master": 168,
-    "prices_daily": 24,
+    "prices_daily": 72,
     "fundamentals": 720,
-    "corporate_actions": 24,
-    "filings": 48
+    "corporate_actions": 72,
+    "filings": 96
   },
 
   "_placeholders": {
@@ -58,6 +58,7 @@
       "cohort_blend_target",
       "current_ratio_cap",
       "dilution_disqualify",
+      "freshness_sla",
       "high_leverage_debt_ebitda",
       "interest_coverage_cap"
     ]
@@ -66,15 +67,17 @@
   "_version_digests": {
     "_comment": "sha256 of the governed values at each version, newest last. Kept as a HISTORY, not a single current value: an entry is only ever added, so a past version's meaning cannot be quietly rewritten. Regenerate with: pipeline/.venv/Scripts/python.exe pipeline/config_loader.py --digest",
     "strategy_version": {
-      "1": "d22cc26e7e1955e7a25c48bf81046ddda84fdb6078c6ed29d9c5fe6ae9ae6c98"
+      "1": "d22cc26e7e1955e7a25c48bf81046ddda84fdb6078c6ed29d9c5fe6ae9ae6c98",
+      "2": "61a5aa1b5a158309f6299a37909883ec6d163b23ff6065f2d78b9456767dc162"
     }
   },
 
   "_decisions": {
-    "high_leverage_debt_ebitda": "Added in F9. The F9 brief specifies the high_leverage risk flag as 'debt/EBITDA above configured threshold' but supplies no number, and no existing key carried one. 4.0x is the conventional leveraged-credit line, approved 2026-08-02. It is governed by strategy_version, so changing it now forces a version bump."
+    "high_leverage_debt_ebitda": "Added in F9. The F9 brief specifies the high_leverage risk flag as 'debt/EBITDA above configured threshold' but supplies no number, and no existing key carried one. 4.0x is the conventional leveraged-credit line, approved 2026-08-02. It is governed by strategy_version, so changing it now forces a version bump.",
+    "freshness_sla": "Finalised in F10 and approved 2026-08-02, replacing the first-pass budgets that had been flagged _provisional since Phase 1. prices_daily and corporate_actions move 24h -> 72h and filings 48h -> 96h, because staleness is measured from the moment selection runs and a Friday-close selection is legitimately three days old by Monday; the old budgets failed every weekend without the pipeline being unhealthy. fundamentals (720h) and symbol_master (168h) are unchanged. Now governed by strategy_version, which is why this change bumped it from 1 to 2."
   },
 
   "_provisional": {
-    "freshness_sla": "Source names and hour budgets follow the F10 freshness spec. The F10 table was not supplied in the Phase 1 prompt, so the source list here is the planned Release 1 set and the hour budgets are first-pass. Confirm against F10 before Phase 2 wires any real source."
+    "_comment": "Empty. Every previously provisional value has been confirmed."
   }
 }

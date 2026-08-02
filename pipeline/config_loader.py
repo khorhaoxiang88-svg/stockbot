@@ -166,6 +166,12 @@ def canonical_value(value: Any) -> str:
     load. Numbers are therefore normalised to the shortest round-trip form both
     languages already agree on, and the web mirror is asserted against the same
     digest in its own test.
+
+    Objects and arrays are walked rather than stringified. Python renders a dict
+    as "{'a': 1}" and JavaScript renders it as "[object Object]", so a governed
+    value that happens to be an object -- freshness_sla is one -- would otherwise
+    hash differently on each side and the guard would fire on every page load.
+    Keys are sorted so the digest does not depend on insertion order.
     """
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -177,6 +183,13 @@ def canonical_value(value: Any) -> str:
         return repr(value)
     if value is None:
         return "null"
+    if isinstance(value, dict):
+        inner = ",".join(
+            f"{key}:{canonical_value(value[key])}" for key in sorted(value)
+        )
+        return "{" + inner + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(canonical_value(item) for item in value) + "]"
     return str(value)
 
 

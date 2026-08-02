@@ -1,22 +1,27 @@
 # stockbot
 
-US stock research system. Phases F1–F9 are built and committed: identity,
+US stock research system. Phases F1–F10 are built and committed: identity,
 classification, prices, SEC facts, derived fundamentals, insider transactions,
-dilution, the composite score, and the risk-flag panel.
+dilution, the composite score, the risk-flag panel, and weekly candidate
+selection with the two simulated books.
 
 What exists right now:
 
-- a Python pipeline with eight ingest and compute stages,
-- ten applied migrations over a SQLite database,
+- a Python pipeline with nine ingest and compute stages,
+- twelve applied migrations over a SQLite database,
 - a frozen, version-governed configuration file for Release 1,
 - a Next.js web app with a `/health` page and a `/security/[id]` page carrying
   identity, price charts, an XBRL fact browser, fundamentals, insider activity,
-  dilution, the full composite score breakdown, and the risk panel.
+  dilution, the full composite score breakdown and the risk panel, plus a
+  `/candidates` page carrying the weekly selection and its suppression log.
 
 The fixture is 50 securities. Current contents: 34,593 price bars, 474
 corporate actions, 1,103,138 XBRL facts across 3,034 payloads, 748 derived
 fundamentals, 6,788 insider rows (198 scored purchases), 50 dilution signals,
-50 composite scores (16 rankable) and 650 risk flags.
+50 composite scores (16 rankable) and 650 risk flags. The current weekly
+selection produces zero candidates, which is the correct result: the price
+ingest is outside its freshness SLA and `composite_threshold` is still the
+declared null placeholder. Both are recorded in the suppression log.
 
 ---
 
@@ -44,6 +49,8 @@ stockbot/
                           insider bonus and the composite.
     riskflags/            Deterministic risk detectors, Altman Z'', and the
                           going-concern phrase detector.
+    selection/            The trading-week calendar, freshness gates, the
+                          selection rule, and the two books.
     tests/                pytest suite.
   data/                   SQLite database and raw payloads. Never committed.
     stockbot.db
@@ -51,6 +58,7 @@ stockbot/
   web/                    Next.js 15 App Router, TypeScript, Tailwind, shadcn/ui.
     app/health/page.tsx   The health page.
     app/security/[id]/    The per-security page.
+    app/candidates/       This week's selection and the suppression log.
     components/           Price chart, score breakdown, risk panel.
     lib/                  db, config, adjust, rank, paths, time helpers.
     tests/                vitest suite.
@@ -177,13 +185,16 @@ pipeline/.venv/Scripts/python.exe pipeline/insider/ingest.py --since 2015-01-01
 pipeline/.venv/Scripts/python.exe pipeline/dilution/compute.py
 pipeline/.venv/Scripts/python.exe pipeline/scoring/compute.py --as-of 2026-07-29
 pipeline/.venv/Scripts/python.exe pipeline/riskflags/compute.py --as-of 2026-07-30
+pipeline/.venv/Scripts/python.exe pipeline/selection/compute.py --as-of 2026-08-02
 ```
 
-The last two take different as-of dates on purpose. A score belongs to a
+The last three take different as-of dates on purpose. A score belongs to a
 trading session, so `scoring` snaps back to the last session. A risk flag is a
 statement about filings and accounts, which arrive on calendar days, so
-`riskflags` uses the date given verbatim. Passing a session date to `riskflags`
-would put the panel behind evidence that was already public.
+`riskflags` uses the date given verbatim - passing a session date would put the
+panel behind evidence that was already public. `selection` takes today's date
+and resolves the week itself, refusing to run for a week that is not provably
+over.
 
 `riskflags` fetches filing documents from EDGAR for the going-concern check and
 therefore needs `SEC_USER_AGENT`. Add `--no-network` to skip it; the flag then
@@ -202,7 +213,7 @@ records itself as an explicit unknown rather than as a clean result.
   ledger the runner needs, and the runner recreates it on connect. After a full
   rollback the table is still there with zero rows.
 
-The ten applied migrations, and what each one owns:
+The twelve applied migrations, and what each one owns:
 
 | # | Tables and views |
 |---|---|
@@ -216,6 +227,8 @@ The ten applied migrations, and what each one owns:
 | 008 | `dilution_signals` |
 | 009 | `scores` (+ `latest_scores`) |
 | 010 | `risk_flags` (+ `latest_risk_flags`) |
+| 011 | `research_candidates`, `suppressed_signals`, `books`, `positions` (+ `latest_selection`) |
+| 012 | rebuild of 010 to add the `overdue_issuer_filing` flag code |
 
 Migration 001 creates operations tables only. Every market-data table arrives
 from 002 onward.
@@ -596,10 +609,13 @@ Two gotchas confirmed from the live data:
 - `composite_threshold` is intentionally `null`. It is a declared placeholder and
   gets its value in Phase S. Both config loaders allow null for this key only,
   and both the health page and `config_loader.py` report it as outstanding.
-- `freshness_sla` lists a per-source maximum staleness in hours. The F10
-  freshness table was not supplied with the Phase 1 brief, so the source names
-  and hour budgets there are a first pass and are flagged `_provisional` inside
-  the JSON. Confirm them against F10 before any real source is wired up.
+- `freshness_sla` lists a per-source maximum staleness in hours, **measured from
+  the moment selection runs**, not from the evidence cutoff. Finalised in F10:
+  `prices_daily` and `corporate_actions` moved 24h → 72h and `filings` 48h → 96h,
+  because a Friday-close selection is legitimately three days old by Monday and
+  the first-pass budgets failed every weekend without the pipeline being
+  unhealthy. `fundamentals` (720h) and `symbol_master` (168h) are unchanged.
+  Nothing in the config is flagged `_provisional` any more.
 - `high_leverage_debt_ebitda` (4.0x) was added in F9. The brief specified the
   high-leverage flag as "debt/EBITDA above configured threshold" but supplied no
   number and no existing key carried one.
@@ -623,10 +639,13 @@ Change a governed value and validation fails:
 ```
 config.frozen.json failed validation:
   - values governed by strategy_version have changed but strategy_version is
-    still 1. Bump it and record the new digest d030399b... (recorded: d22cc26e...)
+    still 2. Bump it and record the new digest 9f5ac193... (recorded: 61a5aa1b...)
 ```
 
 The workflow is: change the value, bump `strategy_version`, add the new digest.
+It has been exercised once already: F10 finalised `freshness_sla`, which took
+`strategy_version` from 1 to 2. Version 1's digest is still in the file, because
+the map only ever grows.
 
 ```bash
 pipeline/.venv/Scripts/python.exe pipeline/config_loader.py --digest
@@ -637,11 +656,15 @@ Declared placeholders are deliberately **not** governed. Filling
 `_placeholders`, and governing it would force a version bump for something the
 config says is coming.
 
-The digest is taken over `key=value` lines with numbers normalised to the
-shortest round-trip form, not over JSON text. Python renders `4.0` as `"4.0"`
-and JavaScript renders it as `"4"`, so hashing serialised JSON would give the
-two loaders different digests and the guard would fire on every page load. A
-test on each side asserts both compute the digest recorded in the file.
+The digest is taken over `key=value` lines with values canonicalised, not over
+JSON text, because the two languages serialise differently. Python renders `4.0`
+as `"4.0"` and JavaScript renders it as `"4"`; Python renders a dict as
+`"{'a': 1}"` and JavaScript renders it as `"[object Object]"`. Either mismatch
+would give the two loaders different digests and fire the guard on every page
+load, so numbers are normalised to the shortest round-trip form and objects and
+arrays are walked with their keys sorted. `freshness_sla` is a governed object
+and exercises that path. A test on each side asserts both compute the digest
+recorded in the file.
 
 ## Dependency notes
 
@@ -813,6 +836,7 @@ Altman Z'' is **not** in the composite. It is a risk flag; see below.
 
 ```bash
 pipeline/.venv/Scripts/python.exe pipeline/riskflags/compute.py --as-of 2026-07-30
+pipeline/.venv/Scripts/python.exe pipeline/selection/compute.py --as-of 2026-08-02
 ```
 
 **Numbering:** the F9 brief called this "migration 009", but 009 (`scores`) was
@@ -890,6 +914,132 @@ and the panel says so instead of rendering a link that would not work.
 
 The `low` severity tier is defined but currently unused; every detector grades
 to high or medium.
+
+## Weekly candidate selection (migrations 011 and 012)
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/selection/compute.py --as-of 2026-08-02
+pipeline/.venv/Scripts/python.exe pipeline/selection/compute.py --verify
+```
+
+**Numbering:** the F10 brief called this "migration 010", but 010 (`risk_flags`)
+was already applied in F9, so the selection tables are **011**. Migration 012
+rebuilds `risk_flags` to add one flag code, `overdue_issuer_filing`; SQLite
+cannot alter a CHECK constraint in place, so the table is rebuilt and the rows
+copied, the same way 007 rebuilt `insider_transactions`.
+
+**Addition beyond the specified tables:** `positions`. The brief specifies three
+tables but states four rules that cannot be expressed without a fourth — one
+open position per (security, horizon), the `open_position` suppression, the exit
+cooldown, the gap-cancel cooldown — plus `books.open_position_count`, which has
+to count something. "At most one open position per (security, horizon)" is a
+partial unique index, not a check in code.
+
+### Which week, and is it over
+
+SELECTION-RULE-1.1 runs selection once per US trading week, after that week's
+final regular session closes. Neither half of that is as simple as it sounds.
+
+The week's final session is **not Friday**. Good Friday, Christmas Day and a
+presidential funeral all move it. Rather than ship a holiday table that will be
+wrong the first time the exchange closes unexpectedly, the final session is read
+from the sessions we hold bars for.
+
+Whether the week is *over* is the part a naive "maximum date in the week"
+misses. A dataset that stops on a Wednesday still has a maximum date in that
+week, and it is not the week's close — the data ran out, the week did not end. A
+week counts as over only when a session exists in a **later** week, or the
+calendar has passed its Saturday **and** the week's last session in the data is
+a Friday. When the exchange is shut on a Friday the second clause does not fire
+and selection waits for Monday's session: a one-session delay rather than a
+wrong answer.
+
+The evidence cutoff is that session's 16:00 ET close converted to UTC, which is
+20:00Z in daylight saving and 21:00Z in standard time — hence the conversion
+rather than a constant.
+
+### Pipeline freshness is not issuer-report age
+
+Two things that look identical from a distance:
+
+- **Pipeline freshness** is about us. Did the scheduled ingestion run and
+  succeed recently enough? A failure blocks every candidate, because selecting
+  on numbers we cannot vouch for is worse than selecting nothing.
+- **Issuer-report age** is about the company. A company that last filed a 10-K
+  eleven months ago is not stale — that is how often companies file. Treating
+  an old-but-current filing as stale would block every well-behaved annual filer
+  for eleven months of every year.
+
+So the SEC check asks whether *our ingestion* succeeded, never whether the newest
+fact is recent. A company that appears to have missed its own deadline gets the
+`overdue_issuer_filing` risk flag instead, which never blocks selection.
+Filer category is unknown — SEC Company Facts does not return
+`dei:EntityFilerCategory`, and there are zero such facts in the fixture — so the
+most permissive (non-accelerated) deadlines are assumed throughout. That can
+under-report an overdue filer but never invent one, which is the right direction
+for a flag that reads as an accusation.
+
+Freshness itself has two axes that must not be conflated:
+
+- **Coverage** is measured against the cutoff. A run that finished before the
+  week's close cannot have seen it, however recently it ran.
+- **Age** is measured against *now*. Measuring it against the cutoff makes any
+  correct backfill look stale, because a backfill always runs after the period
+  it ingests.
+
+Point-in-time correctness is not freshness's job. It belongs to the evidence
+cutoff, which filters individual accessions by `accepted_at`. Ingest broadly,
+then use only what was public at the cutoff.
+
+A run marked `partial` is not a blanket failure. The fact ingest reports partial
+because SPY has no companyfacts endpoint at all — it is a unit investment trust
+and files N-CSR, so a 404 is the correct answer, not an outage. The failure is
+narrowed to the securities the run actually names.
+
+### Determinism
+
+Selection is fully automatic; no human may add, remove or reorder a candidate.
+The sort key is total — composite, then Quality, then `inputs_complete`, then
+`security_id` — and `security_id` is unique, so two securities can never compare
+equal and the order cannot wobble between runs.
+
+`candidate_id` is `sha256(security, cutoff, versions)`, so re-running a week is a
+storage-level no-op rather than a second set of rows that append-only would
+forbid removing. A re-run that computed a *different* `row_hash` for the same
+week aborts loudly instead of appending a second decision.
+
+`research_candidates` is append-only, enforced by triggers. `row_hash` covers
+every other field, so a record whose recomputed hash does not match has been
+edited and is non-official by definition — a stronger guarantee than a boolean
+anyone could also edit. `--verify` recomputes them all.
+
+### Suppression is evidence
+
+Everything considered and not selected is logged with a reason. A candidate list
+on its own cannot be audited: there is no way to tell a security that failed a
+rule from one the code never looked at. Selection-level reasons are logged once
+per horizon, so each book's log independently answers "what qualified and was
+not selected".
+
+Eligibility is enforced from two directions that are deliberately kept separate:
+the F7 dilution score gate (`dilution_score < 22` and not disqualified) and the
+F9 risk-flag view of the same territory (a severity-high `going_concern`, or a
+severity-high flag among `rapid_share_growth`, `active_issuance`,
+`atm_or_convertible`).
+
+### The two books
+
+One book per horizon, 20-day and 60-day, $100,000 starting virtual NAV each.
+One selection produces up to five candidates and **each candidate opens a
+position in both books**, so five candidates become ten positions but remain
+five independent observations. `research_candidates` deliberately has no horizon
+column, so the unique originating candidate count is impossible to lose.
+
+The books are an experimental accounting convention, **not** recommended
+position sizing: every position takes the same fixed $1,000 notional whatever
+its price or volatility, nothing compounds during Release 1, and cash earns no
+interest. They are separate simulated strategy variants, not two independent
+observations and not twice the sample. Never pool them.
 
 ## Traps already paid for
 

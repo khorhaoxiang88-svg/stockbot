@@ -819,6 +819,131 @@ export const RISK_FLAG_LABELS: Record<string, string> = {
   recent_insider_selling: "Recent insider selling",
 };
 
+export type SelectionRun = {
+  run_id: string;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  records_written: number;
+  code_version: string | null;
+};
+
+export type ResearchCandidate = {
+  candidate_id: string;
+  security_id: number;
+  symbol: string | null;
+  name: string | null;
+  generated_at: string;
+  data_cutoff_at: string;
+  snapshot_id: string;
+  pipeline_run_id: string;
+  strategy_version: number;
+  config_hash: string;
+  code_version: string;
+  selection_rule_version: number;
+  mapping_version: string;
+  price_dataset_version: number | null;
+  price_snapshot_hash: string | null;
+  source_health_snapshot_json: string;
+  score_snapshot_json: string;
+  accessions_used_json: string;
+  composite_at_generation: number;
+  rank_at_generation: number;
+  signal_close: number;
+  atr_value: number | null;
+  atr_window: number;
+  price_data_cutoff: string;
+  entry_rule: string;
+  gap_limit_atr: number;
+  row_hash: string;
+};
+
+export type SuppressedSignal = {
+  security_id: number;
+  symbol: string | null;
+  horizon_days: number;
+  composite: number | null;
+  rank: number | null;
+  suppression_reason: string;
+  detail: string | null;
+};
+
+export type Book = {
+  book_id: string;
+  horizon_days: number;
+  starting_nav: number;
+  current_nav: number;
+  open_position_count: number;
+  strategy_version: number;
+};
+
+/** The newest selection run, whether or not it produced any candidate. */
+export function getLatestSelectionRun() {
+  const result = readAll<SelectionRun>(
+    "pipeline_runs",
+    `SELECT run_id, started_at, finished_at, status, records_written, code_version
+       FROM pipeline_runs WHERE stage = 'selection'
+      ORDER BY started_at DESC LIMIT 1`,
+  );
+  return { status: result.status, row: result.rows[0] ?? null };
+}
+
+export function getCandidatesForRun(runId: string) {
+  const safe = String(runId).replace(/[^A-Za-z0-9_-]/g, "");
+  const result = readAll<ResearchCandidate>(
+    "research_candidates",
+    `SELECT c.*, l.symbol, s.name
+       FROM research_candidates c
+       JOIN securities s ON s.security_id = c.security_id
+       LEFT JOIN listings l ON l.security_id = c.security_id AND l.valid_to IS NULL
+      WHERE c.pipeline_run_id = '${safe}'
+      ORDER BY c.rank_at_generation`,
+  );
+  return { status: result.status, rows: result.rows };
+}
+
+export function getSuppressionsForRun(runId: string) {
+  const safe = String(runId).replace(/[^A-Za-z0-9_-]/g, "");
+  const result = readAll<SuppressedSignal>(
+    "suppressed_signals",
+    `SELECT p.security_id, l.symbol, p.horizon_days, p.composite, p."rank",
+            p.suppression_reason, p.detail
+       FROM suppressed_signals p
+       LEFT JOIN listings l ON l.security_id = p.security_id AND l.valid_to IS NULL
+      WHERE p.run_id = '${safe}'
+      ORDER BY p.suppression_reason, p.composite DESC, p.security_id, p.horizon_days`,
+  );
+  return { status: result.status, rows: result.rows };
+}
+
+export function getBooks() {
+  const result = readAll<Book>(
+    "books",
+    `SELECT book_id, horizon_days, starting_nav, current_nav, open_position_count,
+            strategy_version
+       FROM books ORDER BY horizon_days`,
+  );
+  return { status: result.status, rows: result.rows };
+}
+
+/** Plain-language labels for the suppression reasons. */
+export const SUPPRESSION_LABELS: Record<string, string> = {
+  not_rankable: "No composite score at the cutoff",
+  model_not_applicable: "Model not supported for this security type",
+  dilution_disqualified: "Disqualified by the dilution score",
+  risk_flag_going_concern: "Severity-high going-concern flag",
+  risk_flag_dilution_disqualify: "Severity-high dilution flag",
+  below_composite_threshold: "Composite below the configured threshold",
+  composite_threshold_unset: "Composite threshold is still unset",
+  stale_source: "A source failed its freshness check",
+  cooldown_recent_exit: "Cooldown: a position exited recently",
+  cooldown_gap_cancelled: "Cooldown: gap-cancelled recently",
+  open_position: "A position is already open at this horizon",
+  book_capacity: "The book has no remaining capacity",
+  cohort_cap: "Cohort already at its maximum",
+  selection_cap: "The weekly candidate maximum was already filled",
+};
+
 /** SIC codes the fixture cares about naming. Mirrors classify.industry_label. */
 export function industryLabel(sicCode: string | null): string | null {
   if (!sicCode) return null;

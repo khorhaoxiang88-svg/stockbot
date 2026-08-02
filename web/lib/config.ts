@@ -72,6 +72,22 @@ export function canonicalValue(value: unknown): string {
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") return String(value);
   if (value === null || value === undefined) return "null";
+  // Objects and arrays are walked, never stringified. Python renders a dict as
+  // "{'a': 1}" and JavaScript renders it as "[object Object]", so a governed
+  // value that is an object -- freshness_sla is one -- would hash differently on
+  // each side and the guard would fire on every page load. Keys are sorted so
+  // the digest does not depend on insertion order.
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalValue).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const inner = Object.keys(record)
+      .sort()
+      .map((key) => `${key}:${canonicalValue(record[key])}`)
+      .join(",");
+    return `{${inner}}`;
+  }
   return String(value);
 }
 
