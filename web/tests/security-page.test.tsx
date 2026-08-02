@@ -158,12 +158,13 @@ describe("security page", () => {
       "Insider transactions",
       "Universe membership",
       "Composite score",
+      "Measured risks and missing evidence",
     ]) {
       expect(html).toContain(section);
     }
     // This fixture security has no price rows, so Prices and Corporate actions
     // show their own empty states alongside the sections with no rows at all.
-    expect(html.match(/No data yet/g)?.length).toBe(7);
+    expect(html.match(/No data yet/g)?.length).toBe(8);
   });
 
   it("shows the price dataset panel even with no bars", async () => {

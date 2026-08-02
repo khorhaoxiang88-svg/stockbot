@@ -753,6 +753,72 @@ export function parseExplanation(json: string | null): ScoreExplanation | null {
   }
 }
 
+export type RiskSeverity = "high" | "medium" | "low" | "none" | "context" | "unknown";
+
+export type RiskFlag = {
+  flag_code: string;
+  severity: RiskSeverity;
+  evidence_text: string;
+  source_accession: string | null;
+  is_unknown: number;
+  /** Joined from `filings` when the source is an SEC accession. */
+  source_form: string | null;
+  source_filed_date: string | null;
+  source_url: string | null;
+};
+
+/**
+ * Every risk flag for one security at its newest computed date.
+ *
+ * The join to `filings` is a LEFT join on purpose: recent_reverse_split cites
+ * the corporate-action ledger rather than a filing, and the panel says so
+ * instead of rendering a dead link.
+ */
+export function getRiskFlags(securityId: number) {
+  const id = Number(securityId) || 0;
+  const result = readAll<RiskFlag>(
+    "risk_flags",
+    `SELECT r.flag_code, r.severity, r.evidence_text, r.source_accession, r.is_unknown,
+            f.form_type AS source_form, f.filed_date AS source_filed_date,
+            f.primary_doc_url AS source_url
+       FROM risk_flags r
+       LEFT JOIN filings f ON f.accession_no = r.source_accession
+      WHERE r.security_id = ${id}
+        AND r.as_of_date = (SELECT MAX(as_of_date) FROM risk_flags WHERE security_id = ${id})
+      ORDER BY CASE r.severity
+                 WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2
+                 WHEN 'context' THEN 3 WHEN 'unknown' THEN 4 ELSE 5 END,
+               r.flag_code`,
+  );
+  return { status: result.status, rows: result.rows };
+}
+
+export function getRiskAsOf(securityId: number) {
+  const result = readAll<{ as_of_date: string }>(
+    "risk_flags",
+    `SELECT MAX(as_of_date) AS as_of_date FROM risk_flags
+      WHERE security_id = ${Number(securityId) || 0}`,
+  );
+  return result.rows[0]?.as_of_date ?? null;
+}
+
+/** Human labels for the flag codes. Kept beside the query so both stay in step. */
+export const RISK_FLAG_LABELS: Record<string, string> = {
+  negative_operating_cash_flow: "Negative operating cash flow",
+  negative_free_cash_flow: "Negative free cash flow",
+  high_leverage: "High leverage",
+  low_interest_coverage: "Low interest coverage",
+  rapid_share_growth: "Rapid share growth",
+  shelf_capacity: "Shelf capacity",
+  active_issuance: "Active issuance",
+  atm_or_convertible: "ATM programme or convertible",
+  recent_reverse_split: "Recent reverse split",
+  altman_distress: "Altman Z'' distress",
+  going_concern: "Going concern",
+  stale_or_incomplete_data: "Stale or incomplete data",
+  recent_insider_selling: "Recent insider selling",
+};
+
 /** SIC codes the fixture cares about naming. Mirrors classify.industry_label. */
 export function industryLabel(sicCode: string | null): string | null {
   if (!sicCode) return null;

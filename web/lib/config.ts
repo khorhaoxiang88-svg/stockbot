@@ -35,6 +35,7 @@ export const REQUIRED_KEYS = [
   "dilution_disqualify",
   "current_ratio_cap",
   "interest_coverage_cap",
+  "high_leverage_debt_ebitda",
   "exit_cooldown_days",
   "gap_cancel_cooldown_days",
   "freshness_sla",

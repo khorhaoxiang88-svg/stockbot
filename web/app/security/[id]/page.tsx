@@ -18,6 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { PriceChart, type ChartMarker } from "@/components/price-chart";
+import { RiskPanel } from "@/components/risk-panel";
 import { ScoreBreakdown } from "@/components/score-breakdown";
 import {
   adjustedSeries,
@@ -44,6 +45,8 @@ import {
   getProvenance,
   getRankedCount,
   getRestatements,
+  getRiskAsOf,
+  getRiskFlags,
   getScore,
   getSecurityById,
   industryLabel,
@@ -239,6 +242,9 @@ export default async function SecurityPage({
     F: "tax withholding",
     G: "gift",
   };
+
+  const riskFlags = getRiskFlags(securityId);
+  const riskAsOf = getRiskAsOf(securityId);
 
   const score = getScore(securityId);
   const scoreExplanation = parseExplanation(score.row?.explanation_json ?? null);
@@ -1289,6 +1295,8 @@ export default async function SecurityPage({
           note="No data yet. Run pipeline/scoring/compute.py to score this security."
         />
       )}
+
+      <RiskPanel flags={riskFlags.rows} asOfDate={riskAsOf} />
 
       <section className="mb-14 space-y-4">
         <h2>Universe membership</h2>

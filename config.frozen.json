@@ -33,6 +33,8 @@
   "current_ratio_cap": 5.0,
   "interest_coverage_cap": 50,
 
+  "high_leverage_debt_ebitda": 4.0,
+
   "exit_cooldown_days": 10,
   "gap_cancel_cooldown_days": 3,
 
@@ -47,6 +49,10 @@
 
   "_placeholders": {
     "composite_threshold": "Set in Phase S (selection). Must be a number before Release 1 ships."
+  },
+
+  "_decisions": {
+    "high_leverage_debt_ebitda": "Added in F9. The F9 brief specifies the high_leverage risk flag as 'debt/EBITDA above configured threshold' but supplies no number, and no existing key carried one. 4.0x is the conventional leveraged-credit line. This is a NEW key, not a changed value, so no *_version key is bumped; confirm the number before Release 1."
   },
 
   "_provisional": {
