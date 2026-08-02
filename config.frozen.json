@@ -51,8 +51,27 @@
     "composite_threshold": "Set in Phase S (selection). Must be a number before Release 1 ships."
   },
 
+  "_governed_by": {
+    "_comment": "Parameters whose value changes what a stored number MEANS. Each list is guarded by the named *_version key: change any value in the list without bumping that version and config validation fails, in both pipeline/config_loader.py and web/lib/config.ts. Declared placeholders are deliberately excluded, because filling one is an expected event already tracked in _placeholders.",
+    "strategy_version": [
+      "cohort_blend_floor",
+      "cohort_blend_target",
+      "current_ratio_cap",
+      "dilution_disqualify",
+      "high_leverage_debt_ebitda",
+      "interest_coverage_cap"
+    ]
+  },
+
+  "_version_digests": {
+    "_comment": "sha256 of the governed values at each version, newest last. Kept as a HISTORY, not a single current value: an entry is only ever added, so a past version's meaning cannot be quietly rewritten. Regenerate with: pipeline/.venv/Scripts/python.exe pipeline/config_loader.py --digest",
+    "strategy_version": {
+      "1": "d22cc26e7e1955e7a25c48bf81046ddda84fdb6078c6ed29d9c5fe6ae9ae6c98"
+    }
+  },
+
   "_decisions": {
-    "high_leverage_debt_ebitda": "Added in F9. The F9 brief specifies the high_leverage risk flag as 'debt/EBITDA above configured threshold' but supplies no number, and no existing key carried one. 4.0x is the conventional leveraged-credit line. This is a NEW key, not a changed value, so no *_version key is bumped; confirm the number before Release 1."
+    "high_leverage_debt_ebitda": "Added in F9. The F9 brief specifies the high_leverage risk flag as 'debt/EBITDA above configured threshold' but supplies no number, and no existing key carried one. 4.0x is the conventional leveraged-credit line, approved 2026-08-02. It is governed by strategy_version, so changing it now forces a version bump."
   },
 
   "_provisional": {

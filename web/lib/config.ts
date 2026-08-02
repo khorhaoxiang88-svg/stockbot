@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 
 import { CONFIG_PATH } from "./paths";
@@ -44,9 +45,102 @@ export const REQUIRED_KEYS = [
 /** Keys allowed to be null until the phase named in config._placeholders. */
 export const PLACEHOLDER_KEYS = ["composite_threshold"] as const;
 
+/** Mirrors config_loader.VERSION_KEYS. */
+export const VERSION_KEYS = [
+  "strategy_version",
+  "selection_rule_version",
+  "protocol_version",
+  "resolution_policy_version",
+  "accrual_policy_version",
+  "mapping_version",
+] as const;
+
 export type FrozenConfig = Record<string, unknown>;
 
 export class ConfigError extends Error {}
+
+/**
+ * One textual form for a value, identical to config_loader.canonical_value.
+ *
+ * Hashing JSON.stringify output would not survive the language boundary:
+ * Python renders 4.0 as "4.0" and JavaScript renders it as "4", so the same
+ * config file would hash to two different digests and the guard would fire on
+ * every page load. Numbers are normalised to the shortest round-trip form both
+ * languages already produce, and tests on both sides assert the same digest.
+ */
+export function canonicalValue(value: unknown): string {
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") return String(value);
+  if (value === null || value === undefined) return "null";
+  return String(value);
+}
+
+export function governedDigest(config: FrozenConfig, versionKey: string): string {
+  const governedBy = (config._governed_by ?? {}) as Record<string, unknown>;
+  const keys = (governedBy[versionKey] as string[] | undefined) ?? [];
+  const payload = [...keys]
+    .sort()
+    .map((key) => `${key}=${canonicalValue(config[key])}`)
+    .join("\n");
+  return createHash("sha256").update(payload, "utf-8").digest("hex");
+}
+
+/**
+ * Every governed block must match the digest recorded for its version.
+ *
+ * This is what turns "changing a value means bumping the matching *_version
+ * key" from a note in the README into an enforced rule. A governed value
+ * cannot change and still load: either the version is bumped and a new digest
+ * recorded, or validation fails and names the block that drifted.
+ */
+export function checkGovernedVersions(config: FrozenConfig): string[] {
+  const problems: string[] = [];
+  const governedBy = (config._governed_by ?? {}) as Record<string, unknown>;
+  const digests = (config._version_digests ?? {}) as Record<string, unknown>;
+
+  for (const versionKey of Object.keys(governedBy)) {
+    if (versionKey.startsWith("_")) continue;
+    if (!(VERSION_KEYS as readonly string[]).includes(versionKey)) {
+      problems.push(`_governed_by names ${versionKey}, which is not a version key`);
+      continue;
+    }
+    const keys = (governedBy[versionKey] as string[] | undefined) ?? [];
+    const unknown = keys.filter((key) => !(REQUIRED_KEYS as readonly string[]).includes(key));
+    if (unknown.length > 0) {
+      problems.push(
+        `_governed_by.${versionKey} names key(s) that are not required: ${unknown
+          .sort()
+          .join(", ")}`,
+      );
+    }
+    const governedPlaceholders = keys.filter((key) =>
+      (PLACEHOLDER_KEYS as readonly string[]).includes(key),
+    );
+    if (governedPlaceholders.length > 0) {
+      problems.push(
+        `_governed_by.${versionKey} must not govern declared placeholder(s): ${governedPlaceholders
+          .sort()
+          .join(", ")}`,
+      );
+    }
+
+    const current = String(config[versionKey]);
+    const recorded = (digests[versionKey] as Record<string, string> | undefined)?.[current];
+    const actual = governedDigest(config, versionKey);
+    if (recorded === undefined) {
+      problems.push(
+        `no digest recorded for ${versionKey}=${current}. Add ` +
+          `_version_digests.${versionKey}["${current}"] = "${actual}"`,
+      );
+    } else if (recorded !== actual) {
+      problems.push(
+        `values governed by ${versionKey} have changed but ${versionKey} is still ` +
+          `${current}. Bump it and record the new digest ${actual} (recorded: ${recorded})`,
+      );
+    }
+  }
+  return problems;
+}
 
 export function validateConfig(config: FrozenConfig, source = "config"): void {
   const problems: string[] = [];
@@ -63,6 +157,8 @@ export function validateConfig(config: FrozenConfig, source = "config"): void {
   if (wrongNulls.length > 0) {
     problems.push(`key(s) set to null that may not be null: ${wrongNulls.join(", ")}`);
   }
+
+  problems.push(...checkGovernedVersions(config));
 
   if (problems.length > 0) {
     throw new ConfigError(`${source} failed validation:\n  - ${problems.join("\n  - ")}`);

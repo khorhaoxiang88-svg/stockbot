@@ -7,6 +7,7 @@ instead of silently changing trading behaviour later.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import MappingProxyType
@@ -140,6 +141,11 @@ def validate_config(config: Mapping[str, Any], source: str = "config") -> None:
         if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0):
             problems.append(f"{key} must be a positive number, got {value!r}")
 
+    # Last, because it is the only check that can pass while every individual
+    # value is valid: it asks whether the SET of governed values still matches
+    # the version stamped on it.
+    problems += check_governed_versions(config)
+
     if problems:
         raise ConfigError(
             f"{source} failed validation:\n  - " + "\n  - ".join(problems)
@@ -151,7 +157,99 @@ def pending_placeholders(config: Mapping[str, Any]) -> list[str]:
     return sorted(key for key in PLACEHOLDER_KEYS if config.get(key) is None)
 
 
+def canonical_value(value: Any) -> str:
+    """One textual form for a value, identical in Python and in TypeScript.
+
+    Digesting JSON.dumps output directly does not work across the two loaders:
+    Python renders 4.0 as "4.0" and JavaScript renders it as "4", so the same
+    config would produce two different hashes and the guard would fire on every
+    load. Numbers are therefore normalised to the shortest round-trip form both
+    languages already agree on, and the web mirror is asserted against the same
+    digest in its own test.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value == int(value) and abs(value) < 1e15:
+            return str(int(value))
+        return repr(value)
+    if value is None:
+        return "null"
+    return str(value)
+
+
+def governed_digest(config: Mapping[str, Any], version_key: str) -> str:
+    """sha256 of every value the named version key governs."""
+    governed = (config.get("_governed_by") or {}).get(version_key) or []
+    payload = "\n".join(
+        f"{key}={canonical_value(config.get(key))}" for key in sorted(governed)
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def check_governed_versions(config: Mapping[str, Any]) -> list[str]:
+    """Every governed block must match the digest recorded for its version.
+
+    This is what makes "changing a value means bumping the version" an enforced
+    rule rather than a note in the README. A governed value cannot change and
+    still load: either the version is bumped and a new digest recorded, or
+    validation fails and says which block drifted.
+    """
+    problems: list[str] = []
+    governed_by = config.get("_governed_by") or {}
+    digests = config.get("_version_digests") or {}
+
+    for version_key, keys in governed_by.items():
+        if version_key.startswith("_"):
+            continue
+        if version_key not in VERSION_KEYS:
+            problems.append(
+                f"_governed_by names {version_key}, which is not a version key"
+            )
+            continue
+        unknown = [key for key in keys if key not in REQUIRED_KEYS]
+        if unknown:
+            problems.append(
+                f"_governed_by.{version_key} names key(s) that are not required: "
+                + ", ".join(sorted(unknown))
+            )
+        placeholders = [key for key in keys if key in PLACEHOLDER_KEYS]
+        if placeholders:
+            problems.append(
+                f"_governed_by.{version_key} must not govern declared placeholder(s): "
+                + ", ".join(sorted(placeholders))
+            )
+
+        current = str(config.get(version_key))
+        recorded = (digests.get(version_key) or {}).get(current)
+        actual = governed_digest(config, version_key)
+        if recorded is None:
+            problems.append(
+                f"no digest recorded for {version_key}={current}. Add "
+                f'_version_digests.{version_key}["{current}"] = "{actual}"'
+            )
+        elif recorded != actual:
+            problems.append(
+                f"values governed by {version_key} have changed but {version_key} "
+                f"is still {current}. Bump it and record the new digest "
+                f"{actual} (recorded: {recorded})"
+            )
+    return problems
+
+
 if __name__ == "__main__":
+    import sys
+
+    if "--digest" in sys.argv:
+        raw = json.loads(Path(DEFAULT_CONFIG_PATH).read_text(encoding="utf-8"))
+        for name in (raw.get("_governed_by") or {}):
+            if name.startswith("_"):
+                continue
+            print(f'{name}={raw.get(name)}  digest={governed_digest(raw, name)}')
+        raise SystemExit(0)
+
     cfg = load_config()
     print(f"Loaded {len(REQUIRED_KEYS)} required keys from {DEFAULT_CONFIG_PATH}")
     still_open = pending_placeholders(cfg)

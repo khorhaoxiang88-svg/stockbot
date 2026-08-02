@@ -8,6 +8,8 @@ from config_loader import (
     PLACEHOLDER_KEYS,
     REQUIRED_KEYS,
     ConfigError,
+    canonical_value,
+    governed_digest,
     load_config,
     pending_placeholders,
     validate_config,
@@ -100,3 +102,90 @@ def test_invalid_json_raises_clear_error(tmp_path):
     path.write_text("{ not json", encoding="utf-8")
     with pytest.raises(ConfigError, match="not valid JSON"):
         load_config(path)
+
+
+# ---------------------------------------------------- version-governed values
+
+
+def _mutable_config() -> dict:
+    """A plain dict copy, including the "_"-prefixed governance blocks."""
+    import copy
+
+    return copy.deepcopy(dict(load_config()))
+
+
+def test_high_leverage_threshold_is_governed_by_strategy_version():
+    cfg = load_config()
+    governed = cfg["_governed_by"]["strategy_version"]
+    assert "high_leverage_debt_ebitda" in governed
+    # Everything governed must be a real required key, and the list must stay
+    # sorted so a diff shows an addition rather than a reshuffle.
+    assert governed == sorted(governed)
+    for key in governed:
+        assert key in REQUIRED_KEYS
+
+
+def test_declared_placeholders_are_never_governed():
+    cfg = load_config()
+    for version_key, keys in cfg["_governed_by"].items():
+        if version_key.startswith("_"):
+            continue
+        # Filling composite_threshold in Phase S is an expected event tracked in
+        # _placeholders. Governing it would force a strategy_version bump for
+        # something the config already declares is coming.
+        assert not set(keys) & set(PLACEHOLDER_KEYS)
+
+
+def test_recorded_digest_matches_the_current_governed_values():
+    cfg = load_config()
+    current = str(cfg["strategy_version"])
+    recorded = cfg["_version_digests"]["strategy_version"][current]
+    assert governed_digest(cfg, "strategy_version") == recorded
+
+
+def test_changing_a_governed_value_without_a_bump_is_refused():
+    cfg = _mutable_config()
+    cfg["high_leverage_debt_ebitda"] = 5.0
+    with pytest.raises(ConfigError, match="strategy_version is still 1"):
+        validate_config(cfg)
+
+
+def test_bumping_without_recording_a_digest_is_refused():
+    cfg = _mutable_config()
+    cfg["strategy_version"] = 2
+    with pytest.raises(ConfigError, match="no digest recorded for strategy_version=2"):
+        validate_config(cfg)
+
+
+def test_a_bump_with_its_digest_recorded_is_accepted():
+    cfg = _mutable_config()
+    cfg["high_leverage_debt_ebitda"] = 5.0
+    cfg["strategy_version"] = 2
+    cfg["_version_digests"]["strategy_version"]["2"] = governed_digest(
+        cfg, "strategy_version"
+    )
+    validate_config(cfg)  # must not raise
+
+
+def test_earlier_version_digests_are_kept_as_history():
+    cfg = load_config()
+    # The map is a history, so a past version's meaning cannot be rewritten
+    # without the change showing up in the diff.
+    assert isinstance(cfg["_version_digests"]["strategy_version"], dict)
+    assert "1" in cfg["_version_digests"]["strategy_version"]
+
+
+def test_canonical_value_normalises_numbers_the_way_javascript_does():
+    # 4.0 must render as "4", not "4.0", or the two loaders disagree.
+    assert canonical_value(4.0) == "4"
+    assert canonical_value(50) == "50"
+    assert canonical_value(0.35) == "0.35"
+    assert canonical_value(True) == "true"
+    assert canonical_value(None) == "null"
+
+
+def test_governing_an_unknown_key_is_refused():
+    cfg = _mutable_config()
+    cfg["_governed_by"]["strategy_version"] = ["not_a_real_key"]
+    with pytest.raises(ConfigError, match="not required"):
+        validate_config(cfg)

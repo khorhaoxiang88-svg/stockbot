@@ -22,6 +22,13 @@ web/next-env.d.ts
 # Session tooling artefacts (auto-generated checkpoints, not project files)
 SESSION-STATE.md
 NOTES.md
+# Handoff notes for resuming an agent session. Useful locally, but it restates
+# what README.md and the commit history already record, so it is not carried in
+# the repository where it would drift out of date.
+HANDOFF.md
+# Editor and agent launch configuration. Machine-local: the dev-server port and
+# runtime here suit one workstation, not the project.
+.claude/
 
 # Editors and OS
 .vscode/

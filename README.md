@@ -1,13 +1,22 @@
 # stockbot
 
-US stock research system. **Phase 1: skeleton only — no market data yet.**
+US stock research system. Phases F1–F9 are built and committed: identity,
+classification, prices, SEC facts, derived fundamentals, insider transactions,
+dilution, the composite score, and the risk-flag panel.
 
 What exists right now:
 
-- a Python pipeline folder with its own virtual environment,
-- a numbered migration system for the SQLite database,
-- a frozen configuration file for Release 1,
-- a Next.js web app with a `/health` page.
+- a Python pipeline with eight ingest and compute stages,
+- ten applied migrations over a SQLite database,
+- a frozen, version-governed configuration file for Release 1,
+- a Next.js web app with a `/health` page and a `/security/[id]` page carrying
+  identity, price charts, an XBRL fact browser, fundamentals, insider activity,
+  dilution, the full composite score breakdown, and the risk panel.
+
+The fixture is 50 securities. Current contents: 34,593 price bars, 474
+corporate actions, 1,103,138 XBRL facts across 3,034 payloads, 748 derived
+fundamentals, 6,788 insider rows (198 scored purchases), 50 dilution signals,
+50 composite scores (16 rankable) and 650 risk flags.
 
 ---
 
@@ -15,34 +24,56 @@ What exists right now:
 
 ```
 stockbot/
-  config.frozen.json      Frozen Release 1 parameters. Version-controlled.
+  config.frozen.json      Frozen Release 1 parameters. Version-governed.
   .env.example            Template for .env. Copy it, never commit .env.
-  .gitignore              Excludes .env and /data.
+  .gitignore              Excludes .env, /data, and session tooling files.
   migrations/             Numbered SQL, one .up.sql and one .down.sql each.
   pipeline/               Python side.
     .venv/                Virtual environment (not committed).
     requirements.txt
     migrate.py            Migration runner.
-    config_loader.py      Loads and validates config.frozen.json.
+    config_loader.py      Loads, validates and version-guards the frozen config.
+    universe/             Identity, symbol history, classification, the fixture.
+    prices/               Provider interface, ingest, read-time adjustment,
+                          revisions and dataset versions.
+    sec/                  Raw payload store, XBRL facts, acceptance timestamps.
+    fundamentals/         Concept mapping, derived metrics, knowledge states.
+    insider/              Form 4 parsing and ingest, supersede semantics.
+    dilution/             Filing classification and the D1-D4 dilution score.
+    scoring/              Percentiles, cohorts, the three components, the
+                          insider bonus and the composite.
+    riskflags/            Deterministic risk detectors, Altman Z'', and the
+                          going-concern phrase detector.
     tests/                pytest suite.
   data/                   SQLite database and raw payloads. Never committed.
     stockbot.db
     raw/                  Raw source payloads land here, one folder per source.
   web/                    Next.js 15 App Router, TypeScript, Tailwind, shadcn/ui.
     app/health/page.tsx   The health page.
-    lib/                  db, config, paths, time helpers.
+    app/security/[id]/    The per-security page.
+    components/           Price chart, score breakdown, risk panel.
+    lib/                  db, config, adjust, rank, paths, time helpers.
     tests/                vitest suite.
 ```
 
 ## Rules this project follows
 
 1. **Timestamps are stored in UTC.** Conversion to US Eastern happens only for
-   display and market-calendar logic (`web/lib/time.ts`).
+   display and market-calendar logic (`web/lib/time.ts`). `prices.date`,
+   `ex_date` and `filed_date` are ET *trading dates* by design.
 2. **Schema changes only ever go in a new numbered migration.** Never edit a
-   migration that has already been applied.
+   migration that has already been applied. Two briefs have specified a
+   migration number that was already taken; both times the migration was
+   renumbered rather than the applied file edited.
 3. **`config.frozen.json` is frozen for Release 1.** Changing a value means
-   bumping the matching `*_version` key.
-4. **`.env` and `/data/` are never committed.**
+   bumping the matching `*_version` key, and for the values listed under
+   `_governed_by` that rule is **enforced**, not merely documented — see
+   [Version-governed configuration](#version-governed-configuration).
+4. **A ticker is never identity.** `security_id` is the only stable key and
+   every symbol lookup takes a date.
+5. **Never impute, never zero-fill.** A missing input yields NULL plus a reason,
+   never a substituted zero.
+6. **`.env` and `/data/` are never committed.**
 
 ---
 
@@ -130,6 +161,34 @@ Start the web app, then open <http://localhost:3000/health>:
 npm run dev --prefix web
 ```
 
+Never run `npm run build` while `npm run dev` is running: both write
+`web/.next` and it breaks the dev server.
+
+### The full pipeline, in dependency order
+
+Each stage depends on the ones above it. Re-running any stage is safe.
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/universe/load_fixture.py
+pipeline/.venv/Scripts/python.exe pipeline/prices/ingest.py
+pipeline/.venv/Scripts/python.exe pipeline/sec/ingest_facts.py
+pipeline/.venv/Scripts/python.exe pipeline/fundamentals/compute.py
+pipeline/.venv/Scripts/python.exe pipeline/insider/ingest.py --since 2015-01-01
+pipeline/.venv/Scripts/python.exe pipeline/dilution/compute.py
+pipeline/.venv/Scripts/python.exe pipeline/scoring/compute.py --as-of 2026-07-29
+pipeline/.venv/Scripts/python.exe pipeline/riskflags/compute.py --as-of 2026-07-30
+```
+
+The last two take different as-of dates on purpose. A score belongs to a
+trading session, so `scoring` snaps back to the last session. A risk flag is a
+statement about filings and accounts, which arrive on calendar days, so
+`riskflags` uses the date given verbatim. Passing a session date to `riskflags`
+would put the panel behind evidence that was already public.
+
+`riskflags` fetches filing documents from EDGAR for the going-concern check and
+therefore needs `SEC_USER_AGENT`. Add `--no-network` to skip it; the flag then
+records itself as an explicit unknown rather than as a clean result.
+
 ---
 
 ## How migrations work
@@ -143,8 +202,23 @@ npm run dev --prefix web
   ledger the runner needs, and the runner recreates it on connect. After a full
   rollback the table is still there with zero rows.
 
-Migration 001 creates operations tables only: `pipeline_runs`, `source_health`,
-`schema_migrations`. No market data tables exist yet.
+The ten applied migrations, and what each one owns:
+
+| # | Tables and views |
+|---|---|
+| 001 | `pipeline_runs`, `source_health`, `schema_migrations` |
+| 002 | `securities`, `listings`, `universe_snapshot_runs`, `universe_snapshots`, `fixture_manifest` |
+| 003 | `prices`, `price_revisions`, `price_dataset_versions`, `price_series_provenance`, `corporate_actions` |
+| 004 | `raw_payloads`, `filings`, `xbrl_facts` (+ `usable_facts`) |
+| 005 | `concept_mappings`, `derived_fundamentals` (+ `latest_fundamentals`) |
+| 006 | `insider_transactions` (+ `scored_insider_purchases`, `effective_insider_transactions`) |
+| 007 | rebuild of 006 to allow a NULL `amends_accession` |
+| 008 | `dilution_signals` |
+| 009 | `scores` (+ `latest_scores`) |
+| 010 | `risk_flags` (+ `latest_risk_flags`) |
+
+Migration 001 creates operations tables only. Every market-data table arrives
+from 002 onward.
 
 ## Identity model (migration 002)
 
@@ -526,8 +600,48 @@ Two gotchas confirmed from the live data:
   freshness table was not supplied with the Phase 1 brief, so the source names
   and hour budgets there are a first pass and are flagged `_provisional` inside
   the JSON. Confirm them against F10 before any real source is wired up.
+- `high_leverage_debt_ebitda` (4.0x) was added in F9. The brief specified the
+  high-leverage flag as "debt/EBITDA above configured threshold" but supplied no
+  number and no existing key carried one.
 - The required-key list exists twice on purpose: `pipeline/config_loader.py` for
   Python and `web/lib/config.ts` for the web app. Adding a key means editing both.
+
+### Version-governed configuration
+
+"Changing a value means bumping the matching `*_version` key" used to be a rule
+in this file that nothing checked. For the values listed under `_governed_by`
+it is now enforced by both loaders.
+
+`_governed_by` names, per version key, the parameters whose value changes what a
+stored number *means* — thresholds and caps, not operational settings.
+`_version_digests` records the sha256 of those values at each version, as a
+**history** rather than a single current value, so a past version's meaning
+cannot be quietly rewritten.
+
+Change a governed value and validation fails:
+
+```
+config.frozen.json failed validation:
+  - values governed by strategy_version have changed but strategy_version is
+    still 1. Bump it and record the new digest d030399b... (recorded: d22cc26e...)
+```
+
+The workflow is: change the value, bump `strategy_version`, add the new digest.
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/config_loader.py --digest
+```
+
+Declared placeholders are deliberately **not** governed. Filling
+`composite_threshold` in Phase S is an expected event already tracked in
+`_placeholders`, and governing it would force a version bump for something the
+config says is coming.
+
+The digest is taken over `key=value` lines with numbers normalised to the
+shortest round-trip form, not over JSON text. Python renders `4.0` as `"4.0"`
+and JavaScript renders it as `"4"`, so hashing serialised JSON would give the
+two loaders different digests and the guard would fire on every page load. A
+test on each side asserts both compute the digest recorded in the file.
 
 ## Dependency notes
 
@@ -600,3 +714,199 @@ score does not disqualify it.
 Related: **PHUN scores 4** despite being the fixture's designated diluter — its
 14 424B5 filings all predate the 12-month D2 window (most recent 2024-11-01).
 D2 is a trailing-12-month measure by design.
+
+## Composite score (migration 009)
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/scoring/compute.py --as-of 2026-07-29
+```
+
+**Numbering:** the F8 brief called this "migration 008", but 008
+(`dilution_signals`) was already applied in F7, so the table is **009**.
+Contents unchanged.
+
+```
+composite = 0.30*Value + 0.30*Quality + 0.30*Momentum + InsiderBonus
+          - DilutionPenalty,  clamped to [0, 100]
+```
+
+### Reproducible by hand, or it does not count
+
+`explanation_json` stores, for every submetric: nominal weight, valid yes/no,
+effective weight after renormalisation, comparison population name and count,
+cohort blend weight, raw value, percentile and final contribution — plus every
+insider sub-bonus calculation. The score breakdown on `/security/[id]` renders
+that JSON and nothing else, so the page cannot disagree with the database.
+
+A test re-derives every stored score from its own explanation. Five were also
+recomputed by hand off the rendered page and matched exactly: AAPL 58.0785,
+HON 56.5488, MTDR 54.6092, CAT 39.5753, NVDA 35.5140.
+
+### Percentiles
+
+```
+pct(x, P) = 100 * (below + (equal - 1) / 2) / (n - 1)
+```
+
+The brief's formula is the no-tie case; the mid-rank correction generalises it
+so every member of a tie group gets the same value whatever order the rows
+arrived in. **With n < 2 the percentile is UNAVAILABLE, not zero** — a
+population of one has no order statistics, and 0 is a real score meaning "worst
+in the universe". Lower-is-better metrics invert the percentile, never the raw
+value.
+
+Comparison populations are drawn from one **official universe snapshot** at one
+knowledge cutoff, both recorded with every ranked metric. F1-F7 never populated
+`universe_snapshot_runs`; scoring materialises the snapshot and marks it
+official before any percentile is taken, because otherwise a percentile would
+depend on which securities happened to have data that day.
+
+### Cohorts are SIC divisions, never GICS
+
+Nothing in this system has ever seen a GICS code. Cohort ids carry a `SIC-`
+prefix and the labels say "SIC division" in words. Blending weight is
+`w = 0` below 10 valid observations of *that metric* in the cohort, else
+`clamp(n_c / 50, 0, 1)`.
+
+### Gates and renormalisation
+
+| Component | Weight | Gate |
+|---|---|---|
+| Value | 0.30 | at least 3 of 4 submetrics valid |
+| Quality | 0.30 | Piotroski fully computable, plus 3 of the remaining 4 |
+| Momentum | 0.30 | at least 250 adjusted trading days |
+
+Renormalisation happens strictly **inside** a component. Piotroski's 0.40 share
+never moves; a missing non-Piotroski metric is redistributed only within the
+remaining 0.60. Momentum never renormalises at all — its seven weights already
+sum to 1.00 and a missing input fails the gate rather than inflating the others.
+No component weight is ever moved to another component: a NULL component
+withholds the whole security and records a `withhold_reason`.
+
+**Withheld is not zero.** A security that cannot be scored stores NULL and a
+reason. The web page shows the reason where the score would be.
+
+### The insider bonus
+
+An insider is counted **once**. B1 rewards several different people buying at
+the same time, so purchases collapse to one `q_i` per insider by taking the max
+and N counts distinct insiders; splitting one decision across three tickets
+cannot manufacture a cluster.
+
+Coverage is **proved, not assumed**. F6's ingest caps each security at 60
+original Form 4s and 10 amendments, keeping the most recent, and that cap is
+invisible in the transactions table. A window is provably covered only if the
+cap was never hit, or the oldest ingested filing predates the window. Complete
+coverage with no qualifying purchase is an **observed zero** and is still
+ranked; incomplete or stale coverage is **unknown** and withholds ranking.
+
+### Winsorisation
+
+Applied only where raw magnitudes enter arithmetic: the F5 interest-coverage cap
+(50), the F5 current-ratio cap (5.0), and the Z'' inputs in F9. Nothing is
+winsorised before percentile ranking — percentiles are order statistics, so it
+would have no effect, and no such code exists.
+
+Altman Z'' is **not** in the composite. It is a risk flag; see below.
+
+## Risk flags (migration 010)
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/riskflags/compute.py --as-of 2026-07-30
+```
+
+**Numbering:** the F9 brief called this "migration 009", but 009 (`scores`) was
+already applied in F8, so the table is **010**. Contents unchanged.
+
+Thirteen deterministic detectors. There is no language model anywhere in this
+package and nothing here is a written bear case: each flag states what was
+measured and links to the filing it was measured from.
+
+### An unknown is a flag
+
+Severity carries six values so the two states that matter stay apart:
+
+| severity | meaning |
+|---|---|
+| `high` / `medium` / `low` | a risk was **detected**, graded |
+| `none` | the check **ran** and detected nothing |
+| `context` | neutral information, must not be read as bearish |
+| `unknown` | the check **could not run**, with the reason |
+
+Collapsing `none` and `unknown` would make "we looked and it is fine"
+indistinguishable from "we never looked". The panel is titled **"Measured risks
+and missing evidence"** for the same reason, and renders detected risks and
+unknowns in separate labelled sections at the same visual weight as the score.
+
+### Insider selling is context, enforced in SQL
+
+Insiders sell for taxes, diversification and personal reasons. A database CHECK
+permits only `context` or `unknown` for `recent_insider_selling`, so no future
+code path can promote a sale to a bearish severity.
+
+### The going-concern detector is narrow on purpose
+
+It anchors on two fixed phrases within 240 characters — "substantial doubt" and
+"ability to continue as a going concern" — the construction ASC 205-40 and
+AS 2415 / AU-C 570 actually require. Nothing looser is matched, because a
+general detector fires on ordinary risk-factor prose in every small-cap 10-K.
+
+Three rejection rules cover text that carries both phrases without being a
+disclosure: an explicit **denial** ("did not raise substantial doubt"), the
+ASC 205-40 policy **definition** ("whether conditions would raise..."), and a
+subject that is not the registrant. Doubt that was identified and then
+**alleviated** fires at `medium` rather than being dropped: the auditor's
+paragraph goes away, the condition having existed does not.
+
+The scan streams the document and matches as it arrives, so there is no size
+limit and it stops reading on the first match. Chunks are cut only at
+whitespace or a closing tag — an earlier version split words across boundaries,
+turning "substantial" into "substan tial", and under-reported silently.
+
+Live result across the fixture: 3 detected (RAD, BIG, SAVE, all Chapter 11
+filers, each linked to the exact filing and character offset), 45 clean, 2
+unknown (GNS files a 20-F and SPY an N-CSR, so neither has a 10-K or 10-Q).
+
+### Altman Z''
+
+The four-variable Z'' for non-manufacturers, flagged below 1.10. **Not part of
+the composite**, and every row carries the applicability caveat: Z'' was fitted
+on manufacturers and emerging-market industrials and reads low for financials,
+REITs, pre-revenue companies, and companies with negative equity from buybacks.
+Its inputs are winsorised and clamping is recorded when it bites — AMC's `x4`
+was clamped from -0.1912 to 0.0 on negative equity, stated in the evidence text.
+
+Retained earnings is the one Z'' input F5 does not map. F5's mapping is frozen
+at `MAPPING_VERSION` and every `derived_fundamentals` row records that version,
+so F9 resolves the concept through the same `FactIndex` machinery rather than
+changing the provenance of numbers it does not touch.
+
+### One documented deviation
+
+`recent_reverse_split` cites `ledger:corporate_actions:<security_id>:<ex_date>`
+rather than an SEC accession, because the action is observed in the price
+vendor's feed and no filing reports it as such. It resolves to exactly one row,
+and the panel says so instead of rendering a link that would not work.
+
+The `low` severity tier is defined but currently unused; every detector grades
+to high or medium.
+
+## Traps already paid for
+
+These cost real debugging time. They are recorded so they are not rediscovered.
+
+- **yfinance `auto_adjust=False` still returns SPLIT-adjusted OHLC.** The
+  provider un-adjusts on the way in. Verified: NVDA traded near 1208.90 on
+  2024-06-07; Yahoo reports 120.89.
+- **Yahoo puts spin-off factors in the `Stock Splits` column.** Unclean ratios
+  are filed as `other` with `requires_manual_review` and never adjust prices.
+- **A company's EDGAR feed contains filings where it is the reporting OWNER,**
+  not the issuer. Always resolve by the filing's own `issuerCik`.
+- **`dei:EntityCommonStockSharesOutstanding` is a cover-page instant**, not
+  dated at the fiscal period end.
+- **The prior fiscal period must come from annual 10-K durations**, never from
+  an arbitrary fact date; cover-page instants silently null every YoY metric.
+- **Bank 424B2 filings are debt.** 126,659 of them in the fixture. Classify
+  before scoring, and test debt language *before* equity language.
+- **`semantic_hash` excludes the CIK**, so 71,910 values are shared by more than
+  one company. Always group by `(cik, semantic_hash)`.
