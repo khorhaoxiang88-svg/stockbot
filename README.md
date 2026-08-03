@@ -30,10 +30,13 @@ ingest is outside its freshness SLA and `composite_threshold` is still the
 declared null placeholder. Both are recorded in the suppression log, and F11's
 execution run is therefore a correct no-op — there is nothing to execute yet.
 
-**Phase F exit-criteria verification: 9 of 10 checks PASS.** The tenth,
-20 Form 4 filings hand-verified against live EDGAR documents, is a named human
-task with zero mechanism to fake, and reports PENDING honestly rather than a
-manufactured PASS. Phase S may not begin until all ten report PASS — see
+**Phase F exit-criteria verification: 10 of 10 checks PASS — Phase F exit gate
+clear as of 2026-08-04.** The tenth, 20 Form 4 filings hand-verified against
+live EDGAR documents (6 of them amendments, zero discrepancies), was a named
+human task with zero mechanism to fake, and it is now recorded as real rows in
+`filing_verifications` rather than a manufactured PASS. That table lives in
+`data/`, which `.gitignore` excludes — the verification is durable in the
+database, not in git; see
 [Phase F exit-criteria verification](#phase-f-exit-criteria-verification-migration-015)
 below.
 
@@ -1235,22 +1238,41 @@ small, self-contained scenario with the real `pipeline.execution` modules and
 assert on it fresh, every run — a genuine PASS or FAIL, not an unresolvable
 PENDING that could never turn green until a live trade occurs.
 
-### Check 5 is PENDING, honestly, and stays that way until a human acts
+### Check 5 was PENDING until a human acted, then PASSED for real
 
 Twenty Form 4 filings hand-verified against their live EDGAR source documents,
 at least three of them amendments — this is fundamentally a human act, opening
 the actual filing and comparing it field by field against what
-`insider_transactions` stored. Nothing in this system can fake that.
-`filing_verifications` starts and stays empty until it happens for real; check
-5 counts real rows there and reports PENDING with the exact count against the
-requirement, never a manufactured PASS.
+`insider_transactions` stored. Nothing in this system could fake that.
+`filing_verifications` started and stayed empty until it happened for real;
+check 5 counts real rows there and reported PENDING with the exact count
+against the requirement, never a manufactured PASS.
+
+Completed 2026-08-04: 20 of 20 filings verified, 6 of them amendments (against
+a 3-minimum), zero discrepancies against stored data. One informational note
+was recorded in `discrepancy_notes` without affecting `matches_source`: FOX's
+accession `0001628280-26-017855` line 15 is a code-P "purchase" that footnote
+11 identifies as shares moving into the LKM Family Trust, not an open-market
+purchase with new capital — the stored code/shares/price are correct as
+filed, but F8's insider-purchase scoring cannot currently distinguish an
+open-market buy from an intra-family trust transfer, since both are Table I
+code P. Flagged for Phase S calibration, not an F6 defect.
+
+**This verification is durable in `filing_verifications`, not in git.**
+`data/` is excluded by `.gitignore` (rule 6), so the 20 rows — and the check 5
+PASS the harness derives from them on every run — exist only in
+`data/stockbot.db` on whatever machine ran the verification. No code, schema,
+or migration changed to complete check 5; migration 015 already had the table.
+A fresh clone with an empty database will show check 5 PENDING again until
+`filing_verifications` is repopulated — that is correct behavior, not a
+regression, since the human act the check exists to prove has to happen
+against whatever database is actually in front of the checker.
 
 One documented investigation before building this: F6 (migration 006) recorded
 a verification of the `aff10b5One` checkbox's presence across 15 filings, one
 of them an amendment. That is real work, but it checked one specific field's
 presence across 15 filings — not a full field-by-field reconciliation of 20,
-with 3+ amendments, that check 5 requires. It does not count toward check 5,
-and no other record in this repository does either.
+with 3+ amendments, that check 5 requires. It never counted toward check 5.
 
 ### Every mismatch found while building the harness was in the TEST, not the pipeline
 
