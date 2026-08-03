@@ -61,8 +61,9 @@ describe("health page", () => {
     const html = await renderHealthPage(dbPath);
     expect(html).toContain("System health");
     expect(html).toContain("connected");
-    // Fixture, source health and pipeline runs are all empty here.
-    expect(html.match(/No data yet/g)?.length).toBe(3);
+    // Fixture, source health, pipeline runs and (since only migration 001 is
+    // applied) the F12 verification section are all empty here.
+    expect(html.match(/No data yet/g)?.length).toBe(4);
     // The applied migration is listed.
     expect(html).toContain("001");
   });
@@ -73,5 +74,46 @@ describe("health page", () => {
     expect(html).toContain("Frozen configuration");
     expect(html).toContain(`${REQUIRED_KEYS.length} loaded`);
     expect(html).toContain("composite_threshold");
+  });
+
+  it("shows the Phase F verification report with real check results", async () => {
+    const dbPath = path.join(tempDir, "verify.db");
+    const { default: Database } = await import("better-sqlite3");
+    const db = new Database(dbPath);
+    for (const file of fs
+      .readdirSync(path.join(REPO_ROOT, "migrations"))
+      .filter((name) => name.endsWith(".up.sql"))
+      .sort()) {
+      db.exec(fs.readFileSync(path.join(REPO_ROOT, "migrations", file), "utf-8"));
+    }
+    db.prepare(
+      "INSERT INTO pipeline_runs (run_id, stage, started_at, finished_at, status, code_version) "
+      + "VALUES ('verification-1', 'verification', '2026-08-05T00:00:00Z', "
+      + "'2026-08-05T00:01:00Z', 'partial', 'v')",
+    ).run();
+    const insert = db.prepare(
+      "INSERT INTO verification_results (run_id, check_number, check_name, status, detail, "
+      + "evidence_json) VALUES ('verification-1', ?, ?, ?, ?, ?)",
+    );
+    insert.run(1, "Derived accounting metrics reproduce from stored facts", "pass",
+      "748 of 748 rows reproduced", JSON.stringify({ rows_reproduced: 748 }));
+    insert.run(5, "20 Form 4 filings hand-verified against EDGAR", "pending",
+      "0 of 20 required filings verified against EDGAR (0 of 3 required amendments)",
+      JSON.stringify({ rows: [] }));
+    insert.run(9, "No metric displays zero where data is absent", "fail",
+      "1 place where absent data may be rendering as zero",
+      JSON.stringify({ violations: [{ table: "derived_fundamentals", metric: "roic" }] }));
+    db.close();
+
+    const html = await renderHealthPage(dbPath);
+    expect(html).toContain("Phase F exit-criteria verification");
+    expect(html).toContain("PASS");
+    expect(html).toContain("PENDING");
+    expect(html).toContain("FAIL");
+    expect(html).toContain("748 of 748 rows reproduced");
+    expect(html).toContain("Phase S may not begin until every check passes");
+    // Evidence for each check is rendered, not just the one-line summary.
+    expect(html).toContain("rows_reproduced");
+    expect(html).toContain("roic");
   });
 });

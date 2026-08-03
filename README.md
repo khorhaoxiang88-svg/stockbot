@@ -1,20 +1,23 @@
 # stockbot
 
-US stock research system. Phases F1–F11 are built and committed: identity,
+US stock research system. Phases F1–F12 are built and committed: identity,
 classification, prices, SEC facts, derived fundamentals, insider transactions,
 dilution, the composite score, the risk-flag panel, weekly candidate selection
-with the two simulated books, and execution under a frozen protocol.
+with the two simulated books, execution under a frozen protocol, and the
+automated harness proving Phase F's exit criteria.
 
 What exists right now:
 
-- a Python pipeline with ten ingest and compute stages,
-- thirteen applied migrations over a SQLite database,
+- a Python pipeline with eleven ingest, compute and verification stages,
+- fifteen applied migrations over a SQLite database,
 - a frozen, version-governed configuration file for Release 1,
-- a Next.js web app with a `/health` page, a `/security/[id]` page carrying
-  identity, price charts, an XBRL fact browser, fundamentals, insider activity,
-  dilution, the full composite score breakdown and the risk panel, a
-  `/candidates` page carrying the weekly selection and its suppression log, and
-  a `/performance` page reporting execution results per horizon.
+- a Next.js web app with a `/health` page (now including the Phase F
+  verification report), a `/security/[id]` page carrying identity, price
+  charts, an XBRL fact browser, fundamentals, insider activity, dilution, the
+  full composite score breakdown and the risk panel, a `/candidates` page
+  carrying the weekly selection and its suppression log, a `/performance` page
+  reporting execution results per horizon, and a `/debug/[security_id]` page
+  dumping every stored row for one security, raw, across every table.
 - the "Engineering validation dataset — not strategy performance" banner on
   every page, in the root layout.
 
@@ -26,6 +29,13 @@ selection produces zero candidates, which is the correct result: the price
 ingest is outside its freshness SLA and `composite_threshold` is still the
 declared null placeholder. Both are recorded in the suppression log, and F11's
 execution run is therefore a correct no-op — there is nothing to execute yet.
+
+**Phase F exit-criteria verification: 9 of 10 checks PASS.** The tenth,
+20 Form 4 filings hand-verified against live EDGAR documents, is a named human
+task with zero mechanism to fake, and reports PENDING honestly rather than a
+manufactured PASS. Phase S may not begin until all ten report PASS — see
+[Phase F exit-criteria verification](#phase-f-exit-criteria-verification-migration-015)
+below.
 
 ---
 
@@ -57,16 +67,19 @@ stockbot/
                           selection rule, and the two books.
     execution/            R1-PROTOCOL-1.1: entry, slippage, corporate actions
                           mid-hold, exits, and delisting resolution.
+    verification/         The ten Phase F exit-criteria checks and the harness
+                          that runs and records them.
     tests/                pytest suite.
   data/                   SQLite database and raw payloads. Never committed.
     stockbot.db
     raw/                  Raw source payloads land here, one folder per source.
   web/                    Next.js 15 App Router, TypeScript, Tailwind, shadcn/ui.
     app/layout.tsx         Root layout; renders the Phase F banner on every page.
-    app/health/page.tsx   The health page.
+    app/health/page.tsx   The health page, plus the verification report.
     app/security/[id]/    The per-security page.
     app/candidates/       This week's selection and the suppression log.
     app/performance/      Execution results, per horizon, never pooled.
+    app/debug/[security_id]/  Every stored row for one security, raw.
     components/           Phase banner, price chart, score breakdown, risk panel.
     lib/                  db, config, adjust, rank, performance, paths, time helpers.
     tests/                vitest suite.
@@ -195,7 +208,12 @@ pipeline/.venv/Scripts/python.exe pipeline/scoring/compute.py --as-of 2026-07-29
 pipeline/.venv/Scripts/python.exe pipeline/riskflags/compute.py --as-of 2026-07-30
 pipeline/.venv/Scripts/python.exe pipeline/selection/compute.py --as-of 2026-08-02
 pipeline/.venv/Scripts/python.exe pipeline/execution/compute.py --as-of 2026-08-02
+pipeline/.venv/Scripts/python.exe pipeline/verification/compute.py
 ```
+
+Verification takes no as-of date: it checks whatever is currently stored, not
+a point in time. Run it after any of the stages above to confirm nothing
+regressed.
 
 The last four take different as-of dates on purpose. A score belongs to a
 trading session, so `scoring` snaps back to the last session. A risk flag is a
@@ -224,7 +242,7 @@ records itself as an explicit unknown rather than as a clean result.
   ledger the runner needs, and the runner recreates it on connect. After a full
   rollback the table is still there with zero rows.
 
-The thirteen applied migrations, and what each one owns:
+The fifteen applied migrations, and what each one owns:
 
 | # | Tables and views |
 |---|---|
@@ -241,6 +259,8 @@ The thirteen applied migrations, and what each one owns:
 | 011 | `research_candidates`, `suppressed_signals`, `books`, `positions` (+ `latest_selection`) |
 | 012 | rebuild of 010 to add the `overdue_issuer_filing` flag code |
 | 013 | `paper_positions`, `benchmark_positions`, `cancelled_entries`, `position_events`; drops `positions` (superseded — see below) |
+| 014 | two triggers backstopping "at most one open position per (security, horizon)" at the storage layer |
+| 015 | `verification_results`, `filing_verifications` (+ `latest_verification_results`) |
 
 Migration 001 creates operations tables only. Every market-data table arrives
 from 002 onward.
@@ -1172,6 +1192,111 @@ time.
 Profit factor is reported as **undefined**, not `Infinity`, when there are no
 losing trades yet: `Infinity` reads as a number and invites being averaged or
 sorted; "undefined, no losses" cannot be misread that way.
+
+## Phase F exit-criteria verification (migration 015)
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/verification/compute.py
+```
+
+**Numbering:** the F12 brief called this "migration 011", but 011-014 were all
+already applied, so the harness tables are **015**.
+
+Ten checks. **PASS, FAIL and PENDING are three different statements**, and
+none of the three substitutes for another: PASS means the check ran and found
+nothing wrong; FAIL means it ran and found a real problem; PENDING means it
+could not run at all yet. "Phase S may not begin until every check passes"
+means all ten report PASS specifically — a PENDING check blocks Phase S
+exactly as a FAIL does, and the harness never collapses the distinction to
+make the report look cleaner than it is.
+
+### Three checks reuse the production code they audit, deliberately
+
+Checks 1, 7 and 8 do not implement a second, parallel version of fundamentals
+computation, score reproduction or risk-flag sourcing. A parallel
+implementation could be wrong in exactly the same way as the original, or
+drift from it silently over time, and neither failure would ever surface.
+Instead each check calls the SAME function that produced the stored row
+(`fundamentals.compute.compute_row`, the scoring explanation's own arithmetic,
+the risk-flag source resolution logic) and diffs the result against what is
+stored. A mismatch means the stored row is stale, corrupted, or was hand-edited
+relative to the current fact base — which is what "reproduces from stored
+facts" actually has to mean to be worth anything.
+
+### Two checks build a fresh synthetic scenario, on purpose
+
+Checks 3 and 6 describe MECHANISM correctness — does a vendor correction leave
+an already-generated candidate unchanged, does a split/dividend/delisting trace
+cleanly — not "did this happen to already exist in the live data". The fixture
+currently holds zero paper_positions (F10 selected no candidates), so checking
+only the live database would report PENDING forever on two checks whose truth
+has nothing to do with whether trading has actually happened yet. Both build a
+small, self-contained scenario with the real `pipeline.execution` modules and
+assert on it fresh, every run — a genuine PASS or FAIL, not an unresolvable
+PENDING that could never turn green until a live trade occurs.
+
+### Check 5 is PENDING, honestly, and stays that way until a human acts
+
+Twenty Form 4 filings hand-verified against their live EDGAR source documents,
+at least three of them amendments — this is fundamentally a human act, opening
+the actual filing and comparing it field by field against what
+`insider_transactions` stored. Nothing in this system can fake that.
+`filing_verifications` starts and stays empty until it happens for real; check
+5 counts real rows there and reports PENDING with the exact count against the
+requirement, never a manufactured PASS.
+
+One documented investigation before building this: F6 (migration 006) recorded
+a verification of the `aff10b5One` checkbox's presence across 15 filings, one
+of them an amendment. That is real work, but it checked one specific field's
+presence across 15 filings — not a full field-by-field reconciliation of 20,
+with 3+ amendments, that check 5 requires. It does not count toward check 5,
+and no other record in this repository does either.
+
+### Every mismatch found while building the harness was in the TEST, not the pipeline
+
+Building the fault-injection tests surfaced three real issues, and it is worth
+being precise about where each one lived:
+
+- **A genuine soundness bug in check 4.** Its scan of the fixture stopped early
+  once ten securities had reproduced cleanly with zero failures so far. A
+  corrupted security appearing LATER in security_id order than the tenth clean
+  one would never have been examined at all — a silent false PASS. Found by
+  writing the fault-injection test itself, before it ever reached a real
+  release. Fixed by removing the early break entirely: check 4 now scans every
+  fixture security with a derived_fundamentals row, always.
+- **Two test-fixture bugs, not pipeline bugs**, in the synthetic scenarios for
+  checks 3 and 6: a placeholder `row_hash` value that the real verification
+  function correctly flagged as tampered (the mechanism worked; the test setup
+  was sloppy), and a "value preserved through a split" assertion that compared
+  the position's slippage-adjusted entry fill against a later raw market
+  close — two different price bases that were never going to match to the
+  cent. Replaced with the direct invariant a correct split actually preserves:
+  shares, entry price, stop and target each scale by the same ratio, checked
+  per field.
+- **Two DB CHECK constraints were EXPECTED to refuse fault injection outright**
+  — corrupting `dilution_signals.dilution_score` or `scores.composite_score`
+  directly raises `IntegrityError` before the corruption can land, because
+  migrations 008 and 009 already tie those columns to their formulas at the
+  storage layer. That is not a gap in the harness; it is a stronger guarantee
+  than the harness re-checking one live row would be, and the tests assert
+  that guarantee explicitly rather than working around it. The genuinely
+  useful fault for check 7 turned out to be corrupting `explanation_json`'s
+  internal `value_used` field, which the DB CHECK has no visibility into at
+  all — exactly the internal consistency check 7 exists to catch.
+
+### `/debug/[security_id]`
+
+Every stored row for one security, raw, across every table that references it
+— directly by `security_id`, or indirectly through `cik` (filings, xbrl_facts)
+or through `candidate_id` (paper_positions, cancelled_entries, and
+position_events one join further, through paper_positions). This is
+deliberately NOT a curated view: every other page in this app formats, labels
+and interprets what it shows, and this one exists precisely so state can be
+inspected without reading the code that produced it. A `NULL` cell renders as
+the literal text `NULL`, never a blank standing in for it. Every table shows
+its true row count even when a cap applies — `prices` and `xbrl_facts` are the
+only tables that can plausibly exceed the 500-row cap for a security with
+years of history, and the cap is stated, never silent.
 
 ## Traps already paid for
 

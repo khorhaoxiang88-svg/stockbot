@@ -1058,6 +1058,198 @@ export function getUniqueOriginatingCandidateCount() {
 
 export const EXECUTION_PROTOCOL_VERSION = "R1-PROTOCOL-1.1";
 
+// ------------------------------------------------------------- F12: verification
+
+export type VerificationResult = {
+  run_id: string;
+  check_number: number;
+  check_name: string;
+  status: "pass" | "fail" | "pending";
+  detail: string;
+  evidence_json: string;
+};
+
+export type VerificationRun = {
+  run_id: string;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+};
+
+/** The most recent verification run's ten check rows, in check order. */
+export function getLatestVerificationResults() {
+  const result = readAll<VerificationResult>(
+    "verification_results",
+    `SELECT run_id, check_number, check_name, status, detail, evidence_json
+       FROM latest_verification_results ORDER BY check_number`,
+  );
+  return { status: result.status, rows: result.rows };
+}
+
+export function getLatestVerificationRun() {
+  const result = readAll<VerificationRun>(
+    "pipeline_runs",
+    `SELECT run_id, started_at, finished_at, status FROM pipeline_runs
+      WHERE stage = 'verification' ORDER BY started_at DESC LIMIT 1`,
+  );
+  return { status: result.status, row: result.rows[0] ?? null };
+}
+
+export function getFilingVerificationCount() {
+  const result = readAll<{
+    total: number; matching: number; amendments_matching: number; mismatches: number;
+  }>(
+    "filing_verifications",
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN matches_source = 1 THEN 1 ELSE 0 END) AS matching,
+            SUM(CASE WHEN matches_source = 1 AND is_amendment = 1 THEN 1 ELSE 0 END)
+              AS amendments_matching,
+            SUM(CASE WHEN matches_source = 0 THEN 1 ELSE 0 END) AS mismatches
+       FROM filing_verifications`,
+  );
+  return result.rows[0] ?? { total: 0, matching: 0, amendments_matching: 0, mismatches: 0 };
+}
+
+// -------------------------------------------------------------------- F12: debug
+
+export type DebugTable = {
+  table: string;
+  label: string;
+  columns: string[];
+  rows: Record<string, unknown>[];
+  totalCount: number;
+  truncated: boolean;
+};
+
+const DEBUG_ROW_CAP = 500;
+
+/**
+ * Every stored row for one security, across every table that references it --
+ * directly by security_id, or indirectly through cik or candidate_id. This is
+ * a raw dump, not a curated view: the point is inspecting actual database
+ * state without reading the code that produced it, so nothing here reshapes
+ * or interprets a value the way the rest of the app's pages do.
+ *
+ * Tables are capped at DEBUG_ROW_CAP rows each with the true total always
+ * shown, never silently. Every fixture-scale table (fewer than 1,000 rows for
+ * any one security) renders in full; only prices and xbrl_facts can plausibly
+ * exceed the cap for a security with years of history.
+ */
+export function getDebugTablesForSecurity(securityId: number): {
+  status: DbStatus;
+  cik: string | null;
+  tables: DebugTable[];
+} {
+  const id = Number(securityId) || 0;
+  let db: Database.Database | null = null;
+  try {
+    db = openReadOnly();
+    if (!db) return { status: { state: "missing", path: DB_PATH }, cik: null, tables: [] };
+
+    const securityRow = tableExists(db, "securities")
+      ? (db.prepare("SELECT cik FROM securities WHERE security_id = ?").get(id) as
+          | { cik: string | null }
+          | undefined)
+      : undefined;
+    const cik = securityRow?.cik ?? null;
+
+    const specs: { table: string; label: string; sql: string; params: unknown[] }[] = [
+      { table: "securities", label: "Identity", sql:
+        "SELECT * FROM securities WHERE security_id = ?", params: [id] },
+      { table: "listings", label: "Symbol history", sql:
+        "SELECT * FROM listings WHERE security_id = ? ORDER BY valid_from DESC", params: [id] },
+      { table: "universe_snapshots", label: "Universe snapshots", sql:
+        "SELECT * FROM universe_snapshots WHERE security_id = ? ORDER BY snapshot_date DESC",
+        params: [id] },
+      { table: "fixture_manifest", label: "Fixture manifest", sql:
+        "SELECT * FROM fixture_manifest WHERE security_id = ?", params: [id] },
+      { table: "prices", label: "Raw prices", sql:
+        "SELECT * FROM prices WHERE security_id = ? ORDER BY date DESC", params: [id] },
+      { table: "corporate_actions", label: "Corporate actions", sql:
+        "SELECT * FROM corporate_actions WHERE security_id = ? ORDER BY ex_date DESC",
+        params: [id] },
+      { table: "price_revisions", label: "Price revisions", sql:
+        "SELECT * FROM price_revisions WHERE security_id = ? ORDER BY date DESC, revision DESC",
+        params: [id] },
+      { table: "price_series_provenance", label: "Price series provenance", sql:
+        "SELECT * FROM price_series_provenance WHERE security_id = ? ORDER BY valid_from DESC",
+        params: [id] },
+      { table: "filings", label: "SEC filings (by CIK)", sql:
+        "SELECT * FROM filings WHERE cik = ? ORDER BY filed_date DESC", params: [cik ?? ""] },
+      { table: "xbrl_facts", label: "XBRL facts (by CIK)", sql:
+        "SELECT * FROM xbrl_facts WHERE cik = ? ORDER BY period_end DESC", params: [cik ?? ""] },
+      { table: "derived_fundamentals", label: "Derived fundamentals", sql:
+        "SELECT * FROM derived_fundamentals WHERE security_id = ? "
+        + "ORDER BY period_end DESC, knowledge_date DESC", params: [id] },
+      { table: "insider_transactions", label: "Insider transactions", sql:
+        "SELECT * FROM insider_transactions WHERE security_id = ? ORDER BY transaction_date DESC",
+        params: [id] },
+      { table: "dilution_signals", label: "Dilution signals", sql:
+        "SELECT * FROM dilution_signals WHERE security_id = ? ORDER BY as_of_date DESC",
+        params: [id] },
+      { table: "scores", label: "Composite scores", sql:
+        "SELECT * FROM scores WHERE security_id = ? ORDER BY score_date DESC", params: [id] },
+      { table: "risk_flags", label: "Risk flags", sql:
+        "SELECT * FROM risk_flags WHERE security_id = ? ORDER BY as_of_date DESC, flag_code",
+        params: [id] },
+      { table: "research_candidates", label: "Research candidates", sql:
+        "SELECT * FROM research_candidates WHERE security_id = ? ORDER BY data_cutoff_at DESC",
+        params: [id] },
+      { table: "suppressed_signals", label: "Suppressed signals", sql:
+        "SELECT * FROM suppressed_signals WHERE security_id = ? ORDER BY run_id DESC",
+        params: [id] },
+      { table: "paper_positions", label: "Paper positions", sql:
+        "SELECT p.* FROM paper_positions p "
+        + "JOIN research_candidates c ON c.candidate_id = p.candidate_id "
+        + "WHERE c.security_id = ? ORDER BY p.entry_date DESC", params: [id] },
+      { table: "benchmark_positions", label: "Benchmark (SPY) positions", sql:
+        "SELECT * FROM benchmark_positions WHERE security_id = ? ORDER BY entry_date DESC",
+        params: [id] },
+      { table: "cancelled_entries", label: "Cancelled entries", sql:
+        "SELECT ce.* FROM cancelled_entries ce "
+        + "JOIN research_candidates c ON c.candidate_id = ce.candidate_id "
+        + "WHERE c.security_id = ? ORDER BY ce.cancelled_at DESC", params: [id] },
+      { table: "position_events", label: "Position events (splits/dividends/etc.)", sql:
+        "SELECT pe.* FROM position_events pe "
+        + "JOIN paper_positions p ON p.position_id = pe.position_id "
+        + "JOIN research_candidates c ON c.candidate_id = p.candidate_id "
+        + "WHERE c.security_id = ? ORDER BY pe.ex_date DESC", params: [id] },
+      { table: "filing_verifications", label: "Form 4 hand verifications", sql:
+        "SELECT * FROM filing_verifications WHERE security_id = ? ORDER BY verified_at DESC",
+        params: [id] },
+    ];
+
+    const tables: DebugTable[] = [];
+    for (const spec of specs) {
+      if (!tableExists(db, spec.table)) continue;
+      if (spec.table === "filings" || spec.table === "xbrl_facts") {
+        if (!cik) {
+          tables.push({ table: spec.table, label: spec.label, columns: [], rows: [],
+            totalCount: 0, truncated: false });
+          continue;
+        }
+      }
+      const totalRow = db
+        .prepare(spec.sql.replace(/^SELECT [\s\S]*? FROM/, "SELECT COUNT(*) AS n FROM"))
+        .get(...spec.params) as { n: number };
+      const rows = db.prepare(`${spec.sql} LIMIT ${DEBUG_ROW_CAP}`).all(...spec.params) as
+        Record<string, unknown>[];
+      tables.push({
+        table: spec.table, label: spec.label,
+        columns: rows.length ? Object.keys(rows[0]) : [],
+        rows, totalCount: totalRow.n, truncated: totalRow.n > rows.length,
+      });
+    }
+
+    return { status: { state: "ok", path: DB_PATH }, cik, tables };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { status: { state: "error", path: DB_PATH, message }, cik: null, tables: [] };
+  } finally {
+    db?.close();
+  }
+}
+
 /** SIC codes the fixture cares about naming. Mirrors classify.industry_label. */
 export function industryLabel(sicCode: string | null): string | null {
   if (!sicCode) return null;

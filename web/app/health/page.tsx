@@ -19,12 +19,16 @@ import {
 import { tryLoadConfig } from "@/lib/config";
 import {
   getAppliedMigrations,
+  getFilingVerificationCount,
   getFixtureConfidenceCounts,
   getFixtureRows,
   getFixtureTypeCounts,
+  getLatestVerificationResults,
+  getLatestVerificationRun,
   getRecentRuns,
   getSourceHealth,
   industryLabel,
+  type VerificationResult,
 } from "@/lib/db";
 import { formatEastern } from "@/lib/time";
 
@@ -36,6 +40,21 @@ function EmptyState({ children }: { children: React.ReactNode }) {
     <p className="rounded-lg border border-dashed border-border px-6 py-8 text-muted-foreground">
       {children}
     </p>
+  );
+}
+
+function VerificationStatusBadge({ status }: { status: VerificationResult["status"] }) {
+  const tone =
+    status === "pass"
+      ? "border-emerald-400/40 bg-emerald-400/15 text-emerald-200"
+      : status === "fail"
+        ? "border-red-400/40 bg-red-400/15 text-red-200"
+        : "border-amber-400/40 bg-amber-400/15 text-amber-200";
+  const label = status === "pass" ? "PASS" : status === "fail" ? "FAIL" : "PENDING";
+  return (
+    <Badge variant="outline" className={`px-3 py-1 text-base font-semibold ${tone}`}>
+      {label}
+    </Badge>
   );
 }
 
@@ -65,6 +84,9 @@ export default async function HealthPage() {
   const confidenceCounts = getFixtureConfidenceCounts();
   const unknownCount =
     typeCounts.rows.find((row) => row.security_type === "unknown")?.n ?? 0;
+  const verificationResults = getLatestVerificationResults();
+  const verificationRun = getLatestVerificationRun();
+  const filingVerifications = getFilingVerificationCount();
 
   const dbState = sources.status.state;
 
@@ -394,6 +416,88 @@ export default async function HealthPage() {
               ))}
             </TableBody>
           </Table>
+        )}
+      </section>
+
+      <section className="mb-14 space-y-6">
+        <h2>Phase F exit-criteria verification</h2>
+        <p className="max-w-3xl text-muted-foreground">
+          Ten checks. &ldquo;Phase S may not begin until every check passes&rdquo; means all
+          ten report PASS specifically — PENDING is not a passing state, it names a check
+          with no mechanism to run yet (currently only check 5, a human EDGAR
+          cross-reference) rather than misrepresenting it as done.
+        </p>
+
+        {verificationResults.rows.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-border px-6 py-8 text-muted-foreground">
+            No data yet. Run pipeline/verification/compute.py to produce a report.
+          </p>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-4">
+              {(() => {
+                const passed = verificationResults.rows.filter((r) => r.status === "pass").length;
+                const total = verificationResults.rows.length;
+                return (
+                  <Badge
+                    variant="outline"
+                    className={`px-3 py-1 text-lg ${
+                      passed === total
+                        ? "border-emerald-400/40 bg-emerald-400/15 text-emerald-200"
+                        : "border-amber-400/40 bg-amber-400/15 text-amber-200"
+                    }`}
+                  >
+                    {passed} of {total} PASS
+                  </Badge>
+                );
+              })()}
+              {verificationRun.row ? (
+                <Badge variant="outline" className="px-3 py-1 font-mono">
+                  run {verificationRun.row.run_id}
+                </Badge>
+              ) : null}
+              {verificationRun.row ? (
+                <Badge variant="outline" className="px-3 py-1 font-mono">
+                  {formatEastern(verificationRun.row.started_at)}
+                </Badge>
+              ) : null}
+            </div>
+
+            <div className="grid gap-3">
+              {verificationResults.rows.map((check) => {
+                let evidence: Record<string, unknown> = {};
+                try {
+                  evidence = JSON.parse(check.evidence_json);
+                } catch {
+                  evidence = { parse_error: true };
+                }
+                return (
+                  <details
+                    key={check.check_number}
+                    className="rounded-lg border border-border p-4"
+                  >
+                    <summary className="flex cursor-pointer flex-wrap items-center gap-3">
+                      <VerificationStatusBadge status={check.status} />
+                      <span className="font-medium">
+                        {check.check_number}. {check.check_name}
+                      </span>
+                    </summary>
+                    <p className="mt-3 text-sm text-muted-foreground">{check.detail}</p>
+                    {check.check_number === 5 ? (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        {filingVerifications.matching} of 20 required filings verified,{" "}
+                        {filingVerifications.amendments_matching} of 3 required amendments,{" "}
+                        {filingVerifications.mismatches} recorded mismatch(es).
+                      </p>
+                    ) : null}
+                    <pre className="mt-3 max-h-96 overflow-auto rounded-md bg-muted/40 p-3 font-mono text-xs">
+                      {JSON.stringify(evidence, null, 2)}
+                    </pre>
+                  </details>
+                );
+              })}
+            </div>
+          </>
         )}
       </section>
     </main>
