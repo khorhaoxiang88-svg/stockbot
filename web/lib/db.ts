@@ -1540,3 +1540,47 @@ export function getCoverageReport(snapshotId: string) {
 
   return { status: population.status, total, bySource, byMetric, staleness, worst };
 }
+
+// ---------------------------------------------------- S3: calibration report
+
+export type CalibrationReport = {
+  score_date: string;
+  empty: boolean;
+  composite_histogram: { bucket_start: number; bucket_end: number; count: number }[];
+  component_distributions: Record<string, { bucket_start: number; bucket_end: number; count: number }[]>;
+  submetric_distributions: Record<
+    string,
+    { valid_count: number; total: number; percentile_histogram: { bucket_start: number; bucket_end: number; count: number }[] }
+  >;
+  rankable_vs_withheld: {
+    rankable: number;
+    withheld_total: number;
+    withheld_by_reason: { reason: string; count: number }[];
+  };
+  cohort_and_metric_coverage: {
+    cohort_sizes: { cohort_id: string; count: number }[];
+    metric_valid_counts: Record<string, number>;
+    total_scored: number;
+  };
+  candidate_rate_simulation: {
+    threshold: number;
+    candidates_per_week: number;
+    suppressed: number;
+    cohort_distribution: Record<string, number>;
+    estimated_weeks_to_100_closed: Record<string, number | null>;
+  }[];
+};
+
+/** Latest stored calibration report, or null if none has been computed yet. */
+export function getLatestCalibrationReport(): { status: DbStatus; report: CalibrationReport | null } {
+  const result = readAll<{ report_json: string }>(
+    "calibration_reports",
+    "SELECT report_json FROM calibration_reports ORDER BY computed_at DESC LIMIT 1",
+  );
+  if (result.rows.length === 0) return { status: result.status, report: null };
+  try {
+    return { status: result.status, report: JSON.parse(result.rows[0].report_json) };
+  } catch {
+    return { status: result.status, report: null };
+  }
+}

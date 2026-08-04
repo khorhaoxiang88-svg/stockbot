@@ -85,8 +85,27 @@ def resolve_score_date(conn: sqlite3.Connection, as_of: str) -> str | None:
     return row["d"] if row and row["d"] else None
 
 
-def universe_rows(conn: sqlite3.Connection) -> list[dict]:
-    """Every fixture security with the fields the universe decision needs."""
+def universe_rows(conn: sqlite3.Connection, pool_versions: list[str] | None = None) -> list[dict]:
+    """Every fixture security (default) or every security in the named
+    candidate pool version(s), with the fields the universe decision needs."""
+    if pool_versions:
+        placeholders = ",".join("?" for _ in pool_versions)
+        return [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT s.security_id, s.cik, s.name, s.security_type, s.sic_code,
+                       COALESCE(l.symbol, p.symbol_at_discovery) AS symbol
+                  FROM universe_candidate_pool p
+                  JOIN securities s ON s.security_id = p.security_id
+                  LEFT JOIN listings l ON l.security_id = p.security_id AND l.valid_to IS NULL
+                 WHERE p.pool_version IN ({placeholders})
+                 GROUP BY s.security_id
+                 ORDER BY s.security_id
+                """,
+                pool_versions,
+            )
+        ]
     return [
         dict(row)
         for row in conn.execute(
@@ -145,7 +164,8 @@ def universe_decision(row: dict, applicable: dict[int, int]) -> tuple[str, str |
 
 
 def ensure_snapshot(
-    conn: sqlite3.Connection, score_date: str, cutoff: str, cfg_hash: str, run_id: str
+    conn: sqlite3.Connection, score_date: str, cutoff: str, cfg_hash: str, run_id: str,
+    pool_versions: list[str] | None = None,
 ) -> tuple[str, list[dict]]:
     """Create the official universe snapshot for this score date, or reuse it.
 
@@ -155,15 +175,22 @@ def ensure_snapshot(
     materialised here from the fixture manifest and marked official, so every
     percentile in the run cites a snapshot_id that can be re-read later.
     """
+    # Pool-scoped runs are a distinct population from the fixture at the same
+    # score_date/config_hash, so the reuse lookup and snapshot_id must be
+    # pool-aware too, or a pool run would silently find and reuse the
+    # fixture's official snapshot.
+    pool_tag = ",".join(sorted(pool_versions)) if pool_versions else "fixture"
+    rules_version = f"F8-scoring/v1[{pool_tag}]"
+    is_official = 0 if pool_versions else 1
     existing = conn.execute(
         """
         SELECT snapshot_id FROM universe_snapshot_runs
-         WHERE is_official = 1 AND effective_at = ? AND config_hash = ?
+         WHERE effective_at = ? AND config_hash = ? AND rules_version = ?
         """,
-        (score_date, cfg_hash),
+        (score_date, cfg_hash, rules_version),
     ).fetchone()
 
-    rows = universe_rows(conn)
+    rows = universe_rows(conn, pool_versions)
     applicable = model_applicable_map(conn, cutoff)
     decided = []
     for row in rows:
@@ -175,16 +202,17 @@ def ensure_snapshot(
     if existing:
         return existing["snapshot_id"], decided
 
-    snapshot_id = f"universe-{score_date}-{cfg_hash[:8]}"
+    pool_digest = hashlib.sha256(pool_tag.encode("utf-8")).hexdigest()[:8]
+    snapshot_id = f"universe-{score_date}-{cfg_hash[:8]}-{pool_digest}"
     conn.execute(
         """
         INSERT INTO universe_snapshot_runs
             (snapshot_id, effective_at, rules_version, config_hash, run_id,
              security_count, is_official)
-        VALUES (?, ?, 'F8-scoring/v1', ?, ?, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (snapshot_id, score_date, cfg_hash, run_id,
-         sum(1 for d in decided if d["status"] == "included")),
+        (snapshot_id, score_date, rules_version, cfg_hash, run_id,
+         sum(1 for d in decided if d["status"] == "included"), is_official),
     )
     for item in decided:
         conn.execute(
@@ -232,7 +260,7 @@ def fundamentals_at(conn: sqlite3.Connection, security_id: int, cutoff: str):
 
 
 def insider_inputs(conn: sqlite3.Connection, security_id: int, score_date: str,
-                   cfg: dict, run: dict | None) -> tuple[list[dict], INS.Coverage]:
+                   cfg: dict, run: dict | None, attempted_ids: set[int]) -> tuple[list[dict], INS.Coverage]:
     purchases = [
         dict(row)
         for row in conn.execute(
@@ -270,13 +298,13 @@ def insider_inputs(conn: sqlite3.Connection, security_id: int, score_date: str,
         staleness = max(0.0, staleness)
     sla = (cfg.get("freshness_sla") or {}).get("filings")
 
-    attempted = conn.execute(
-        """
-        SELECT 1 FROM fixture_manifest f JOIN securities s USING (security_id)
-         WHERE f.security_id = ? AND s.cik IS NOT NULL LIMIT 1
-        """,
-        (security_id,),
-    ).fetchone() is not None
+    # "Attempted" means this security was part of whatever scoring population
+    # (fixture, or an S2-orchestrated pool) the Form 4 ingest was actually run
+    # against -- attempted_ids is that population's security_ids, built once
+    # by the caller from the same `members` list score_universe already has,
+    # rather than hardcoding fixture_manifest and silently excluding every
+    # S1/S2 pool security from ever being scorable.
+    attempted = security_id in attempted_ids
 
     coverage = INS.assess_coverage(
         attempted=attempted,
@@ -355,11 +383,17 @@ def score_universe(conn: sqlite3.Connection, score_date: str, cfg: dict,
                    cfg_hash: str, snapshot_id: str, members: list[dict],
                    cutoff: str) -> list[dict]:
     included = [m for m in members if m["status"] == "included"]
+    attempted_ids = {int(m["security_id"]) for m in members}
 
+    # 'orchestrate_form4' is S2's per-item orchestrated equivalent of a plain
+    # 'insider' run (insider/ingest.py's own main()) -- same evidence, same
+    # completeness guarantee when it finished with zero failures, just a
+    # different stage name because it processes one security at a time
+    # instead of one batch transaction.
     insider_run = conn.execute(
         """
         SELECT run_id, status, finished_at FROM pipeline_runs
-         WHERE stage = 'insider' AND status = 'success'
+         WHERE stage IN ('insider', 'orchestrate_form4') AND status = 'success'
          ORDER BY finished_at DESC LIMIT 1
         """
     ).fetchone()
@@ -382,7 +416,9 @@ def score_universe(conn: sqlite3.Connection, score_date: str, cfg: dict,
         fundamentals, prior_period = fundamentals_at(conn, security_id, cutoff)
         bars = adjusted_series(conn, security_id)
         momentum = MOM.compute_inputs(bars, benchmark_bars, security_id, score_date)
-        purchases, coverage = insider_inputs(conn, security_id, score_date, cfg, insider_run)
+        purchases, coverage = insider_inputs(
+            conn, security_id, score_date, cfg, insider_run, attempted_ids
+        )
         dilution = conn.execute(
             """
             SELECT dilution_score, is_disqualified, as_of_date, shares_yoy_growth
@@ -871,6 +907,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default=str(migrate.DEFAULT_DB_PATH))
     parser.add_argument("--as-of", default=date.today().isoformat())
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    parser.add_argument(
+        "--pool", action="append", default=None,
+        help="score a universe_candidate_pool version instead of the Phase F fixture; "
+        "repeatable to combine pools",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config(Path(args.config))
@@ -892,7 +933,7 @@ def main(argv: list[str] | None = None) -> int:
             "VALUES (?, 'scoring', ?, 'running', ?)",
             (run_id, utc_now(), CODE_VERSION),
         )
-        snapshot_id, members = ensure_snapshot(conn, score_date, cutoff, cfg_hash, run_id)
+        snapshot_id, members = ensure_snapshot(conn, score_date, cutoff, cfg_hash, run_id, args.pool)
         results = score_universe(conn, score_date, cfg, cfg_hash, snapshot_id, members, cutoff)
         results += [
             excluded_row(m, score_date, cfg, cfg_hash, snapshot_id)

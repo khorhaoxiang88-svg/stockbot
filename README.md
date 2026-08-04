@@ -279,6 +279,7 @@ The fifteen applied migrations, and what each one owns:
 | 015 | `verification_results`, `filing_verifications` (+ `latest_verification_results`) |
 | 016 | `universe_candidate_pool`, `universe_membership_changes`; adds `run_type` to `universe_snapshot_runs`; rebuild of `universe_snapshots` to require a reason for `watch` too |
 | 017 | `orchestration_progress` |
+| 018 | `calibration_reports` |
 
 Migration 001 creates operations tables only. Every market-data table arrives
 from 002 onward.
@@ -1532,6 +1533,59 @@ Per source and per metric coverage, null reasons by metric (from
 `missing_fields_json`), a price-staleness distribution, and the 20
 worst-covered securities with what's missing for each — computed against the
 latest monthly snapshot's full population, included and excluded alike.
+
+## S3: calibration report (migration 018)
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/scoring/compute.py --pool <version> [--pool <version>...]
+pipeline/.venv/Scripts/python.exe pipeline/calibration/report.py
+```
+
+Signal-frequency only. **No return, price-after-selection, or performance
+data appears anywhere in this report** — enforced by
+`pipeline/tests/test_calibration.py`, which parses `report.py`'s own AST for
+any reference to `exit_price`, `gross_pnl`, `net_pnl`, `pnl_pct`,
+`paper_positions`, `benchmark_positions` or execution-outcome tables.
+
+The candidate-rate simulation reuses `selection.rules.select()` unmodified —
+the exact function F10's real weekly run calls — applied hypothetically at
+each threshold (50 to 90, step 5) against today's already-computed scores. It
+is a single point-in-time simulation, not a multi-week historical backtest:
+the system has no history of past weekly score snapshots to replay, only
+today's. "Estimated weeks to 100 closed" is pure arithmetic from the
+candidate rate and each horizon's fixed max-hold length (a frozen protocol
+parameter), never anything about what a position actually did.
+
+Two fixes were needed to make F8's scoring reach the S1/S2 pool population at
+all, both scoped by extending existing lookups rather than rewriting them:
+`universe_rows`/`ensure_snapshot` gained a `pool_versions` parameter (mirroring
+every other `--pool` addition since S1, and made the snapshot-reuse lookup
+pool-aware so a pool run and a fixture run at the same score_date/config_hash
+don't collide); and `insider_inputs`' "was Form 4 ingestion attempted for this
+security" check was hardcoded to `fixture_manifest`, so every pool security
+silently read "Insider coverage unknown" regardless of real coverage — it now
+checks against the actual scored population (`attempted_ids`, built from
+`members`), and separately recognises `orchestrate_form4` (S2's per-item
+equivalent of a plain `insider` run) as valid completion evidence.
+
+**Known limitation, stated rather than hidden — and larger than "mostly"**:
+S1's pool discovery never populated `sic_code` for pool securities (only the
+fixture loader does). Checked directly: 887 of 896 scored securities (99%)
+share one undifferentiated `SIC-UNKNOWN` bucket; the remaining 9 real-cohort
+securities sit below the 10-security blend-weight floor too. Cohort blending
+is effectively **inert**, not merely degraded, for this population —
+industry-relative percentiles don't meaningfully exist yet. **Any threshold
+read from this run is provisional** and must be re-verified once `sic_code`
+is populated and the universe is closer to full scale; S4 must not freeze a
+`composite_threshold` from this data.
+
+### `/calibration`
+
+Rankable/withheld breakdown, composite and component histograms, per-submetric
+percentile distributions from stored `explanation_json` (nothing
+recomputed), cohort sizes and per-metric valid-observation counts, and the
+threshold sweep table. The "Calibration data — non-official. No return
+information is used or displayed." banner is permanent on this page.
 
 ## Traps already paid for
 
