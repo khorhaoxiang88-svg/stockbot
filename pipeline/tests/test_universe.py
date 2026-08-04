@@ -16,6 +16,7 @@ from universe.classify import (
     is_rankable,
     rank_exclusion_reason,
 )
+from universe.load_fixture import find_existing_security
 
 
 @pytest.fixture
@@ -91,6 +92,50 @@ def test_reused_symbol_resolves_to_two_distinct_security_ids(conn):
     history = identity.symbol_history(conn, "XYZ")
     assert len(history) == 2
     assert {window.security_id for window in history} == {first_company, second_company}
+
+
+def test_common_stock_and_preferred_share_never_collapse_to_one_security_id(conn):
+    """Regression: discovered via Arbor Realty Trust (CIK 0001253986) during S1.
+
+    share_class is NULL for both a company's common stock and its preferred
+    series -- classify.extract_share_class only recognises "Class X" wording,
+    not preferred series letters like "Series D". Matching an existing
+    security on (cik, share_class) alone silently merged ABR common stock
+    into the already-loaded ABR$D preferred security_id the first time both
+    were loaded under the same CIK. security_type must be part of the match.
+    """
+    preferred_id = make_security(
+        conn,
+        "Arbor Realty Trust 6.375% Series D Cumulative Redeemable Preferred Stock",
+        cik="0001253986",
+        share_class=None,
+        security_type="preferred_share",
+    )
+
+    found_without_type = find_existing_security(
+        conn, "0001253986", None, "Arbor Realty Trust Common Stock"
+    )
+    assert found_without_type == preferred_id, (
+        "sanity check: without security_type, the old bug reproduces"
+    )
+
+    found_with_type = find_existing_security(
+        conn, "0001253986", None, "Arbor Realty Trust Common Stock", "common_stock"
+    )
+    assert found_with_type is None, (
+        "a common-stock candidate must not match an existing preferred_share security"
+    )
+
+    common_id = make_security(
+        conn, "Arbor Realty Trust Common Stock", cik="0001253986",
+        share_class=None, security_type="common_stock",
+    )
+    assert common_id != preferred_id
+
+    # Re-resolving the preferred by its own type still finds the original row.
+    assert find_existing_security(
+        conn, "0001253986", None, "irrelevant", "preferred_share"
+    ) == preferred_id
 
 
 def test_valid_to_is_exclusive(conn):

@@ -198,6 +198,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default=str(migrate.DEFAULT_DB_PATH))
     parser.add_argument("--ciks", nargs="*", help="limit to these CIKs")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--pool",
+        default=None,
+        help="ingest a universe_candidate_pool version instead of the Phase F fixture "
+        "(e.g. s1-sample-v1); does not touch fixture_manifest",
+    )
     args = parser.parse_args(argv)
 
     load_dotenv_into_environ()
@@ -213,7 +219,18 @@ def main(argv: list[str] | None = None) -> int:
             "VALUES (?, 'sec_facts', ?, 'running', 'companyfacts')",
             (run_id, utc_now()),
         )
-        companies = fixture_ciks(conn)
+        if args.pool:
+            from universe.pool import pool_securities
+
+            seen_ciks: set[str] = set()
+            companies = []
+            for row in pool_securities(conn, args.pool):
+                if row["cik"] in seen_ciks:
+                    continue
+                seen_ciks.add(row["cik"])
+                companies.append((row["cik"], row["symbol"]))
+        else:
+            companies = fixture_ciks(conn)
         if args.ciks:
             wanted = {c.zfill(10) for c in args.ciks}
             companies = [(c, l) for c, l in companies if c.zfill(10) in wanted]

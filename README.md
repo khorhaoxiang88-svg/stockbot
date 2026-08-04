@@ -40,6 +40,13 @@ database, not in git; see
 [Phase F exit-criteria verification](#phase-f-exit-criteria-verification-migration-015)
 below.
 
+**Phase S has started.** S1 (migration 016) replaces the fixture with a
+rules-based universe, still non-official. A real 200-security sample plus the
+50-fixture has been evaluated: 125 included, 125 excluded, all 50 fixture
+securities accounted for. The full multi-thousand-ticker candidate set is not
+yet ingested — see
+[S1: rules-based universe](#s1-rules-based-universe-migration-016) below.
+
 ---
 
 ## Folder map
@@ -55,7 +62,8 @@ stockbot/
     requirements.txt
     migrate.py            Migration runner.
     config_loader.py      Loads, validates and version-guards the frozen config.
-    universe/             Identity, symbol history, classification, the fixture.
+    universe/             Identity, symbol history, classification, the fixture,
+                          and (S1) the candidate pool and membership rules.
     prices/               Provider interface, ingest, read-time adjustment,
                           revisions and dataset versions.
     sec/                  Raw payload store, XBRL facts, acceptance timestamps.
@@ -82,6 +90,7 @@ stockbot/
     app/security/[id]/    The per-security page.
     app/candidates/       This week's selection and the suppression log.
     app/performance/      Execution results, per horizon, never pooled.
+    app/universe/          (S1) Membership, status, reason, change log.
     app/debug/[security_id]/  Every stored row for one security, raw.
     components/           Phase banner, price chart, score breakdown, risk panel.
     lib/                  db, config, adjust, rank, performance, paths, time helpers.
@@ -264,6 +273,7 @@ The fifteen applied migrations, and what each one owns:
 | 013 | `paper_positions`, `benchmark_positions`, `cancelled_entries`, `position_events`; drops `positions` (superseded — see below) |
 | 014 | two triggers backstopping "at most one open position per (security, horizon)" at the storage layer |
 | 015 | `verification_results`, `filing_verifications` (+ `latest_verification_results`) |
+| 016 | `universe_candidate_pool`, `universe_membership_changes`; adds `run_type` to `universe_snapshot_runs`; rebuild of `universe_snapshots` to require a reason for `watch` too |
 
 Migration 001 creates operations tables only. Every market-data table arrives
 from 002 onward.
@@ -1320,6 +1330,128 @@ its true row count even when a cap applies — `prices` and `xbrl_facts` are the
 only tables that can plausibly exceed the 500-row cap for a security with
 years of history, and the cap is stated, never silent.
 
+## S1: rules-based universe (migration 016)
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/universe/pool_loader.py --target-size 200
+pipeline/.venv/Scripts/python.exe pipeline/prices/ingest.py --pool s1-sample-v1
+pipeline/.venv/Scripts/python.exe pipeline/sec/ingest_facts.py --pool s1-sample-v1
+pipeline/.venv/Scripts/python.exe pipeline/fundamentals/compute.py --pool s1-sample-v1
+```
+
+Phase S replaces the 50-security fixture with a full rules-based universe.
+**Still non-official** — nothing here feeds an official candidate or
+statistic. This migration is a real, bounded first pass: a 200-security
+sample drawn from the live NYSE/Nasdaq/NYSE American common-stock directory,
+evaluated alongside the Phase F fixture, not yet the full ~3,000-4,000
+candidate set the entry rules will eventually run against.
+
+### Why a 200-security sample first, not the full universe
+
+Filtering the full candidate set to the brief's expected 1,000-1,500 needs
+price, 60-day ADV, market cap and 8 quarters of XBRL for every NYSE/Nasdaq/NYSE
+American common stock — thousands of real SEC and Yahoo calls, likely hours,
+before the rules engine has anything to filter. Proving the membership rules
+and hysteresis logic correct on a real (not fixture) but bounded slice first
+is the same vertical-slice principle Phase F used throughout: an error found
+at 200 securities is cheap; the same error found after paying for a
+multi-thousand-ticker ingest is not. It found two real bugs — see below — that
+a synthetic-only test suite would not have surfaced. The full ingest is
+future work; the manual checklist's universe-size plausibility (1,000-1,500)
+is deliberately not claimed yet.
+
+### Separate from the fixture, on purpose
+
+`universe_candidate_pool` (migration 016) is the S1 analogue of
+`fixture_manifest`, kept as a different table so Phase F's frozen, already-
+passed 10/10 exit criteria never silently grow in scope. `pipeline/universe/
+pool.py` gives F3/F4/F5's ingestion scripts a `--pool <version>` flag that
+selects from the pool instead of the fixture; the default (fixture-only)
+behaviour is untouched.
+
+### Entry rules, retention rules, and why oscillation cannot happen
+
+Entry is the higher bar (price ≥ $3.00, market cap ≥ $300M, 60-day ADV ≥ $5M,
+8 consecutive quarters of XBRL, listed NYSE/Nasdaq/NYSE American, common
+stock, a CIK that files 10-K/10-Q). Retention is a strictly lower bar (price ≥
+$2.50, market cap ≥ $250M, ADV ≥ $4M), enforced by both a config validation
+and an automated test. The mechanism that prevents flapping: **a security is
+only ever judged against entry once**, to get in. Every check after that —
+daily or monthly — uses retention instead. A security that dips just below
+entry but stays above retention never sees the entry bar again, so it cannot
+enter-exit-enter around that line. It can only formally exit by failing
+retention for a full hysteresis window (`universe_retention_hysteresis_days`,
+20 trading days — no number was specified in the brief; 20 matches the
+monthly membership cadence itself, since a formal exit can never happen faster
+than the interval between monthly decisions anyway).
+
+Two run types: `daily_safety` can suspend an included member to `watch`
+immediately (stale price, no recent bar, severe new dilution evidence) and
+advances the hysteresis counter one trading day at a time, but never changes
+formal membership. Only `monthly_membership` may enter or exit a security,
+and only monthly runs write to `universe_membership_changes`, the append-only
+change log.
+
+### Continued monitoring after exit
+
+`membership.securities_requiring_monitoring()` unions current official
+members with every security carrying an open or `pending_resolution` paper
+position. Leaving the universe never stops monitoring a name that still has
+capital in it — a security can be `excluded` in the latest snapshot and still
+appear in this set.
+
+### Two real bugs, found only once real data was used
+
+Both were invisible against the 50-fixture and would have stayed invisible
+against synthetic test data alone — this is the concrete payoff of running a
+real (if bounded) sample before scaling further.
+
+1. **`(cik, share_class)` is not a unique security key.** `share_class` is
+   NULL for both a company's common stock and its preferred series —
+   `classify.py`'s `extract_share_class` only recognises "Class X" wording,
+   not preferred series letters. Discovering ABR (Arbor Realty Trust common)
+   alongside the fixture's already-loaded ABR$D (Series D preferred, same
+   CIK, same NULL share_class) silently merged the two into one `security_id`
+   the first time both existed under the same CIK.
+   `universe/load_fixture.find_existing_security` now matches on
+   `(cik, share_class, security_type)`; `pool_loader.py` uses the same fixed
+   function rather than a second copy.
+2. **A `dei:EntityCommonStockSharesOutstanding` instant of exactly 0 is a
+   real, filed value SEC preserves verbatim** — confirmed in HVT.A's own
+   filing history, accession `0000216085-12-000014` from 2012. Point-in-time
+   share resolution treated it as "present" (zero is present, not falsy, is
+   the codebase's own rule for every other input), which propagated a $0
+   market cap and a $0-numerator P/E for every later knowledge date with no
+   closer share count — exactly the "never zero for absent data" F12 check 9
+   exists to catch, and it did: check 9 failed against the real database
+   after the S1 fundamentals run. `FactIndex.resolve_instant_asof` now skips
+   any non-positive instant per-row rather than accepting the first match,
+   so it finds the next genuinely positive one instead. Unlike the debt,
+   current-ratio and interest-coverage zero rules the brief specifies, a real
+   company cannot have zero shares outstanding — the zero is never a
+   legitimate value for this one input, not merely a case needing a
+   different treatment.
+
+Both fixes ship with regression tests reproducing the exact real-data shape
+that exposed them (`pipeline/tests/test_universe.py`,
+`pipeline/tests/test_fundamentals.py`).
+
+### Real result on the 200-security sample plus the fixture
+
+250 securities evaluated (200 sample + 50 fixture), 125 included, 125
+excluded, all 50 fixture securities accounted for. Exclusion reasons: 52
+market cap, 41 no 10-K/10-Q on file, 22 price, 6 ADV, 2 security_type, 1
+exchange, 1 XBRL depth (a genuine fiscal-year-transition stub-period gap in
+FERG's real SEC data, not a bug — verified against the raw ingested facts).
+
+### `/universe`
+
+Membership, status and the reason for every security in the latest monthly
+snapshot; an exclusion-reason breakdown; the monthly membership change log.
+`watch` and `excluded` both require a non-null reason — migration 016
+rebuilt `universe_snapshots`' CHECK to cover `watch` too, since the
+migration-002 version only required one for `excluded`.
+
 ## Traps already paid for
 
 These cost real debugging time. They are recorded so they are not rediscovered.
@@ -1352,3 +1484,14 @@ These cost real debugging time. They are recorded so they are not rediscovered.
   post-split share count against a pre-split entry price and manufactures a
   return out of the split alone. All three move together, preserving the same
   relative ordering (stop < entry < target) through the split.
+- **`(cik, share_class)` is not a unique security identity.** It is NULL for
+  both a company's common stock and its preferred series. Matching an
+  existing security on that pair alone silently merges the two the first
+  time both are loaded under one CIK. `security_type` must be part of the
+  match — found via Arbor Realty Trust (ABR common vs. ABR$D preferred).
+- **A `dei:EntityCommonStockSharesOutstanding` instant of exactly 0 is a real
+  filed value**, not a sentinel for "unknown" — HVT.A's 2012 filing
+  (accession `0000216085-12-000014`) tags it literally. Treating it as
+  present propagates a $0 market cap and a $0 P/E. Point-in-time share
+  resolution must skip non-positive instants and keep looking, not accept
+  the first match.

@@ -125,6 +125,18 @@ class FactIndex:
         period end, so exact period matching almost never finds it. Market cap is
         specified as point-in-time, so the right value is the most recent share
         count we could have known, not one pinned to the accounting period.
+
+        A non-positive share count is never valid evidence -- confirmed against
+        real ingested data during S1: HVT.A's own filing history tags
+        dei:EntityCommonStockSharesOutstanding as literally 0 in one 2012
+        accession (0000216085-12-000014), a filer error that SEC's data
+        preserves verbatim. Treating it as "present" propagated a $0 market
+        cap, and from there a $0-numerator P/E, for every later knowledge date
+        that had no closer share count -- the exact "zero for absent data"
+        F12 check 9 exists to catch. Skipped here, per-row, so the search
+        keeps looking for the next most recent genuinely positive instant
+        instead of either accepting the bad value or discarding the whole
+        concept.
         """
         best = None
         for taxonomy, concept in candidates:
@@ -133,6 +145,8 @@ class FactIndex:
                     continue  # instants only
                 if row["period_end"] > as_of or row["accepted_at"] > knowledge_date:
                     continue
+                if row["normalized_numeric_value"] is None or row["normalized_numeric_value"] <= 0:
+                    continue  # never valid: a real company cannot have <= 0 shares outstanding
                 if best is None or (row["period_end"], row["accepted_at"]) > (
                     best["period_end"], best["accepted_at"]
                 ):
@@ -393,6 +407,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--since", default=EARLIEST_PERIOD,
                         help="earliest fiscal period end to compute")
     parser.add_argument("--max-periods", type=int, default=MAX_PERIODS)
+    parser.add_argument(
+        "--pool",
+        default=None,
+        help="compute for a universe_candidate_pool version instead of the Phase F fixture "
+        "(e.g. s1-sample-v1); does not touch fixture_manifest",
+    )
     args = parser.parse_args(argv)
 
     config = load_config()
@@ -410,7 +430,12 @@ def main(argv: list[str] | None = None) -> int:
         seeded = seed_concept_mappings(conn)
         mapping = load_concept_mappings(conn)
 
-        securities = fixture_securities(conn)
+        if args.pool:
+            from universe.pool import pool_securities
+
+            securities = pool_securities(conn, args.pool)
+        else:
+            securities = fixture_securities(conn)
         if args.symbols:
             wanted = {s.upper() for s in args.symbols}
             securities = [s for s in securities if s["symbol"].upper() in wanted]

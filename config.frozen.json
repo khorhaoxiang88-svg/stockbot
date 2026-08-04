@@ -7,6 +7,7 @@
   "resolution_policy_version": 1,
   "accrual_policy_version": 1,
   "mapping_version": 1,
+  "universe_rules_version": 1,
 
   "composite_threshold": null,
 
@@ -47,6 +48,19 @@
     "filings": 96
   },
 
+  "universe_entry_price_min": 3.00,
+  "universe_entry_market_cap_min": 300000000,
+  "universe_entry_adv_min": 5000000,
+  "universe_entry_xbrl_quarters_min": 8,
+
+  "universe_retention_price_min": 2.50,
+  "universe_retention_market_cap_min": 250000000,
+  "universe_retention_adv_min": 4000000,
+  "universe_retention_hysteresis_days": 20,
+
+  "universe_classification_confidence_min": "medium",
+  "universe_price_data_max_gap_days": 5,
+
   "_placeholders": {
     "composite_threshold": "Set in Phase S (selection). Must be a number before Release 1 ships."
   },
@@ -61,6 +75,18 @@
       "freshness_sla",
       "high_leverage_debt_ebitda",
       "interest_coverage_cap"
+    ],
+    "universe_rules_version": [
+      "universe_classification_confidence_min",
+      "universe_entry_adv_min",
+      "universe_entry_market_cap_min",
+      "universe_entry_price_min",
+      "universe_entry_xbrl_quarters_min",
+      "universe_price_data_max_gap_days",
+      "universe_retention_adv_min",
+      "universe_retention_hysteresis_days",
+      "universe_retention_market_cap_min",
+      "universe_retention_price_min"
     ]
   },
 
@@ -69,12 +95,18 @@
     "strategy_version": {
       "1": "d22cc26e7e1955e7a25c48bf81046ddda84fdb6078c6ed29d9c5fe6ae9ae6c98",
       "2": "61a5aa1b5a158309f6299a37909883ec6d163b23ff6065f2d78b9456767dc162"
+    },
+    "universe_rules_version": {
+      "1": "c7260e938b6b6062d0f97d1f9fc40c171dfafb80412e5b75c591236f1dbf2d19"
     }
   },
 
   "_decisions": {
     "high_leverage_debt_ebitda": "Added in F9. The F9 brief specifies the high_leverage risk flag as 'debt/EBITDA above configured threshold' but supplies no number, and no existing key carried one. 4.0x is the conventional leveraged-credit line, approved 2026-08-02. It is governed by strategy_version, so changing it now forces a version bump.",
-    "freshness_sla": "Finalised in F10 and approved 2026-08-02, replacing the first-pass budgets that had been flagged _provisional since Phase 1. prices_daily and corporate_actions move 24h -> 72h and filings 48h -> 96h, because staleness is measured from the moment selection runs and a Friday-close selection is legitimately three days old by Monday; the old budgets failed every weekend without the pipeline being unhealthy. fundamentals (720h) and symbol_master (168h) are unchanged. Now governed by strategy_version, which is why this change bumped it from 1 to 2."
+    "freshness_sla": "Finalised in F10 and approved 2026-08-02, replacing the first-pass budgets that had been flagged _provisional since Phase 1. prices_daily and corporate_actions move 24h -> 72h and filings 48h -> 96h, because staleness is measured from the moment selection runs and a Friday-close selection is legitimately three days old by Monday; the old budgets failed every weekend without the pipeline being unhealthy. fundamentals (720h) and symbol_master (168h) are unchanged. Now governed by strategy_version, which is why this change bumped it from 1 to 2.",
+    "universe_retention_hysteresis_days": "Added in S1. The brief specifies hysteresis ('remains eligible until it falls below retention thresholds for a defined number of consecutive trading days') but supplies no number. 20 trading days (~1 month) is chosen to match the monthly formal-membership cadence the same brief specifies -- a security cannot be formally dropped by a dip shorter than the interval between membership decisions anyway. Governed by the new universe_rules_version, separate from strategy_version because these are eligibility parameters, not scoring parameters -- conflating them would force a strategy_version bump for a universe-only change and vice versa. Not yet approved by the user; flag before Phase S calibration if a different value is wanted.",
+    "universe_classification_confidence_min": "Set to 'medium' to reuse the exact bar already established in pipeline/universe/classify.py's RANKABLE_CONFIDENCES (F2), rather than inventing a second confidence threshold with a different meaning.",
+    "universe_price_data_max_gap_days": "The brief's exclusion text ('no price data in 5 trading days') already supplies this number verbatim; recorded here so it is governed and version-checked like every other threshold, not left as a magic number in code."
   },
 
   "_provisional": {

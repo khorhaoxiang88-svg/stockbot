@@ -1260,3 +1260,103 @@ export function industryLabel(sicCode: string | null): string | null {
   }
   return null;
 }
+
+// ------------------------------------------------------- S1 rules-based universe
+
+export type UniverseSnapshotRun = {
+  snapshot_id: string;
+  effective_at: string; // UTC ISO-8601
+  rules_version: string;
+  config_hash: string;
+  security_count: number;
+  is_official: number;
+  run_type: "monthly_membership" | "daily_safety";
+};
+
+export type UniverseMember = {
+  security_id: number;
+  symbol: string | null;
+  name: string;
+  status: "included" | "excluded" | "watch";
+  exclusion_reason: string | null;
+  adv_dollar: number | null;
+  market_cap: number | null;
+  market_cap_confidence: "high" | "medium" | "low" | null;
+  days_below_retention: number;
+};
+
+export type UniverseMembershipChange = {
+  change_id: string;
+  security_id: number;
+  symbol: string | null;
+  name: string;
+  change_type: "entered" | "exited";
+  effective_date: string;
+  previous_status: string | null;
+  new_status: string;
+  reason: string;
+  recorded_at: string;
+};
+
+/** The newest snapshot of the given run_type, whichever securities it covers. */
+export function getLatestUniverseSnapshotRun(runType: "monthly_membership" | "daily_safety") {
+  const safe = runType === "daily_safety" ? "daily_safety" : "monthly_membership";
+  const result = readAll<UniverseSnapshotRun>(
+    "universe_snapshot_runs",
+    `SELECT snapshot_id, effective_at, rules_version, config_hash, security_count,
+            is_official, run_type
+       FROM universe_snapshot_runs WHERE run_type = '${safe}'
+      ORDER BY effective_at DESC LIMIT 1`,
+  );
+  return { status: result.status, row: result.rows[0] ?? null };
+}
+
+export function getUniverseSnapshotRows(snapshotId: string) {
+  const safe = String(snapshotId).replace(/[^A-Za-z0-9_-]/g, "");
+  const result = readAll<UniverseMember>(
+    "universe_snapshots",
+    `SELECT sn.security_id, l.symbol, s.name, sn.status, sn.exclusion_reason,
+            sn.adv_dollar, sn.market_cap, sn.market_cap_confidence, sn.days_below_retention
+       FROM universe_snapshots sn
+       JOIN securities s ON s.security_id = sn.security_id
+       LEFT JOIN listings l ON l.security_id = sn.security_id AND l.valid_to IS NULL
+      WHERE sn.snapshot_id = '${safe}'
+      ORDER BY (sn.status = 'included') DESC, s.name`,
+  );
+  return { status: result.status, rows: result.rows };
+}
+
+export function getUniverseMembershipChanges(limit = 200) {
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 200;
+  const result = readAll<UniverseMembershipChange>(
+    "universe_membership_changes",
+    `SELECT c.change_id, c.security_id, l.symbol, s.name, c.change_type, c.effective_date,
+            c.previous_status, c.new_status, c.reason, c.recorded_at
+       FROM universe_membership_changes c
+       JOIN securities s ON s.security_id = c.security_id
+       LEFT JOIN listings l ON l.security_id = c.security_id AND l.valid_to IS NULL
+      ORDER BY c.recorded_at DESC LIMIT ${safeLimit}`,
+  );
+  return { status: result.status, rows: result.rows };
+}
+
+/** How many of the 50 Phase F fixture securities appear, included or excluded,
+ * in the given snapshot -- the manual verification checklist's item 3. */
+export function getFixtureCoverageInSnapshot(snapshotId: string) {
+  const safe = String(snapshotId).replace(/[^A-Za-z0-9_-]/g, "");
+  const result = readAll<{ n: number }>(
+    "universe_snapshots",
+    `SELECT COUNT(DISTINCT f.security_id) AS n
+       FROM fixture_manifest f
+       JOIN universe_snapshots sn ON sn.security_id = f.security_id AND sn.snapshot_id = '${safe}'`,
+  );
+  const fixtureTotal = readAll<{ n: number }>(
+    "fixture_manifest",
+    `SELECT COUNT(DISTINCT security_id) AS n FROM fixture_manifest`,
+  );
+  return {
+    status: result.status,
+    covered: result.rows[0]?.n ?? 0,
+    total: fixtureTotal.rows[0]?.n ?? 0,
+  };
+}

@@ -40,6 +40,17 @@ export const REQUIRED_KEYS = [
   "exit_cooldown_days",
   "gap_cancel_cooldown_days",
   "freshness_sla",
+  "universe_rules_version",
+  "universe_entry_price_min",
+  "universe_entry_market_cap_min",
+  "universe_entry_adv_min",
+  "universe_entry_xbrl_quarters_min",
+  "universe_retention_price_min",
+  "universe_retention_market_cap_min",
+  "universe_retention_adv_min",
+  "universe_retention_hysteresis_days",
+  "universe_classification_confidence_min",
+  "universe_price_data_max_gap_days",
 ] as const;
 
 /** Keys allowed to be null until the phase named in config._placeholders. */
@@ -53,6 +64,7 @@ export const VERSION_KEYS = [
   "resolution_policy_version",
   "accrual_policy_version",
   "mapping_version",
+  "universe_rules_version",
 ] as const;
 
 export type FrozenConfig = Record<string, unknown>;

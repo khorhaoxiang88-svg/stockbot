@@ -51,14 +51,37 @@ def load_manifest(path: Path = MANIFEST_PATH) -> dict[str, Any]:
 
 
 def find_existing_security(
-    conn: sqlite3.Connection, cik: str | None, share_class: str | None, name: str
+    conn: sqlite3.Connection,
+    cik: str | None,
+    share_class: str | None,
+    name: str,
+    security_type: str | None = None,
 ) -> int | None:
-    """Match on (cik, share_class) first; fall back to name when there is no CIK."""
+    """Match on (cik, share_class, security_type) first; fall back to name when
+    there is no CIK.
+
+    security_type is part of the key because share_class is frequently NULL
+    for BOTH a company's common stock and its preferred series (classify.py's
+    extract_share_class only recognises "Class X" wording, not preferred
+    series letters). Matching on (cik, share_class) alone silently merges a
+    company's common stock and its preferred shares into one security_id the
+    first time both happen to be loaded under the same CIK -- discovered via
+    Arbor Realty Trust (CIK 0001253986): the fixture's Series D preferred
+    (share_class NULL) and a separately-loaded ABR common candidate (also
+    share_class NULL) matched and collapsed into a single row before this fix.
+    """
     if cik:
-        row = conn.execute(
-            "SELECT security_id FROM securities WHERE cik = ? AND share_class IS ?",
-            (cik, share_class),
-        ).fetchone()
+        if security_type is not None:
+            row = conn.execute(
+                "SELECT security_id FROM securities "
+                "WHERE cik = ? AND share_class IS ? AND security_type = ?",
+                (cik, share_class, security_type),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT security_id FROM securities WHERE cik = ? AND share_class IS ?",
+                (cik, share_class),
+            ).fetchone()
         if row:
             return int(row[0])
         return None
@@ -177,7 +200,8 @@ def load(
 
         classification = resolved["classification"]
         security_id = find_existing_security(
-            conn, resolved["cik"], classification.share_class, resolved["name"]
+            conn, resolved["cik"], classification.share_class, resolved["name"],
+            classification.security_type,
         )
         now = utc_now_iso()
         if security_id is None:

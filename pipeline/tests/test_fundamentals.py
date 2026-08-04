@@ -6,6 +6,7 @@ import pytest
 
 import migrate
 from fundamentals import metrics as M
+from fundamentals.compute import FactIndex
 from fundamentals.mappings import MAPPING_VERSION, seed_concept_mappings
 from universe import identity
 
@@ -275,3 +276,66 @@ def test_input_truthiness_is_blocked():
     """A zero value is present. Truthiness would silently treat it as missing."""
     with pytest.raises(TypeError):
         bool(I(0.0))
+
+
+# --------------------------------------- share count instants never accept <= 0
+
+
+def insert_instant_fact(conn, cik, concept, period_end, value, accepted_at, accession, payload_id="p1"):
+    conn.execute(
+        "INSERT OR IGNORE INTO raw_payloads (payload_id, source, endpoint, identifier, "
+        "relative_path, content_hash, byte_size, fetched_at) VALUES (?, 'sec', 'companyfacts', "
+        "?, 'x', 'h', 1, ?)",
+        (payload_id, f"CIK{cik}", accepted_at),
+    )
+    conn.execute(
+        "INSERT INTO xbrl_facts (payload_id, source_fact_key, cik, taxonomy, concept, unit, "
+        "context_type, period_end, normalized_numeric_value, raw_value, context_hash, "
+        "semantic_hash, accepted_at, accession_no, source_endpoint) VALUES "
+        "(?, ?, ?, 'dei', ?, 'shares', 'instant', ?, ?, ?, ?, ?, ?, ?, 'companyfacts')",
+        (
+            payload_id, f"{concept}-{period_end}-{accession}", cik, concept, period_end,
+            value, str(value), f"ctx-{period_end}-{accession}", f"sem-{period_end}-{accession}",
+            accepted_at, accession,
+        ),
+    )
+
+
+def test_a_zero_shares_outstanding_instant_is_never_valid_evidence(conn):
+    """Regression: HVT.A's real SEC filing history tags
+    dei:EntityCommonStockSharesOutstanding as literally 0 in accession
+    0000216085-12-000014 -- a filer error preserved verbatim in SEC's data.
+    A real company cannot have <= 0 shares outstanding; treating 0 as
+    "present" propagated a $0 market cap, and from there a $0-numerator P/E,
+    for every later knowledge date with no closer share count."""
+    cik = "0000216085"
+    insert_instant_fact(
+        conn, cik, "EntityCommonStockSharesOutstanding", "2012-03-31", 0.0,
+        "2012-05-07T16:32:31Z", "0000216085-12-000014",
+    )
+    candidates = [("dei", "EntityCommonStockSharesOutstanding")]
+
+    index = FactIndex(conn, cik, set(candidates))
+    result = index.resolve_instant_asof(candidates, "2024-11-04", "2024-11-04T17:14:34Z")
+
+    assert not result.present, "a 0-valued shares instant must never be treated as present"
+
+
+def test_resolve_instant_asof_skips_a_zero_and_finds_the_next_positive_one(conn):
+    cik = "0000216085"
+    insert_instant_fact(
+        conn, cik, "EntityCommonStockSharesOutstanding", "2012-03-31", 0.0,
+        "2012-05-07T16:32:31Z", "acc-bad",
+    )
+    insert_instant_fact(
+        conn, cik, "EntityCommonStockSharesOutstanding", "2015-06-30", 18_000_000.0,
+        "2015-08-01T00:00:00Z", "acc-good",
+    )
+    candidates = [("dei", "EntityCommonStockSharesOutstanding")]
+
+    index = FactIndex(conn, cik, set(candidates))
+    result = index.resolve_instant_asof(candidates, "2024-11-04", "2024-11-04T17:14:34Z")
+
+    assert result.present
+    assert result.value == 18_000_000.0
+    assert result.accession == "acc-good"

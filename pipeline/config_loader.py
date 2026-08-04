@@ -46,6 +46,17 @@ REQUIRED_KEYS: tuple[str, ...] = (
     "exit_cooldown_days",
     "gap_cancel_cooldown_days",
     "freshness_sla",
+    "universe_rules_version",
+    "universe_entry_price_min",
+    "universe_entry_market_cap_min",
+    "universe_entry_adv_min",
+    "universe_entry_xbrl_quarters_min",
+    "universe_retention_price_min",
+    "universe_retention_market_cap_min",
+    "universe_retention_adv_min",
+    "universe_retention_hysteresis_days",
+    "universe_classification_confidence_min",
+    "universe_price_data_max_gap_days",
 )
 
 # Keys allowed to be null right now. Each must be filled before Release 1 ships.
@@ -58,6 +69,7 @@ VERSION_KEYS: tuple[str, ...] = (
     "resolution_policy_version",
     "accrual_policy_version",
     "mapping_version",
+    "universe_rules_version",
 )
 
 
@@ -135,11 +147,42 @@ def validate_config(config: Mapping[str, Any], source: str = "config") -> None:
         "gap_cancel_atr",
         "current_ratio_cap",
         "interest_coverage_cap",
+        "universe_entry_price_min",
+        "universe_entry_market_cap_min",
+        "universe_entry_adv_min",
+        "universe_entry_xbrl_quarters_min",
+        "universe_retention_price_min",
+        "universe_retention_market_cap_min",
+        "universe_retention_adv_min",
+        "universe_retention_hysteresis_days",
+        "universe_price_data_max_gap_days",
     )
     for key in positive_numbers:
         value = config.get(key)
         if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0):
             problems.append(f"{key} must be a positive number, got {value!r}")
+
+    # Retention thresholds must be strictly below their matching entry
+    # thresholds, or hysteresis cannot do its job: a security that dips
+    # below entry but not below retention should stay in, and that is only
+    # possible if retention is the lower bar.
+    retention_pairs = (
+        ("universe_retention_price_min", "universe_entry_price_min"),
+        ("universe_retention_market_cap_min", "universe_entry_market_cap_min"),
+        ("universe_retention_adv_min", "universe_entry_adv_min"),
+    )
+    for retention_key, entry_key in retention_pairs:
+        retention_value = config.get(retention_key)
+        entry_value = config.get(entry_key)
+        if (
+            isinstance(retention_value, (int, float))
+            and isinstance(entry_value, (int, float))
+            and retention_value >= entry_value
+        ):
+            problems.append(
+                f"{retention_key} ({retention_value}) must be strictly below "
+                f"{entry_key} ({entry_value})"
+            )
 
     # Last, because it is the only check that can pass while every individual
     # value is valid: it asks whether the SET of governed values still matches
