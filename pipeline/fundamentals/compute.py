@@ -400,6 +400,24 @@ def fixture_securities(conn) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def compute_for_security(
+    conn, security: dict, all_concepts: set, mapping: dict, config, since: str, max_periods: int
+) -> int:
+    """Every derived row for one security. Extracted from main()'s loop body,
+    unchanged, so pipeline/orchestrate/ can commit and checkpoint progress
+    per security instead of the whole batch."""
+    index = FactIndex(conn, security["cik"], all_concepts)
+    periods = [p for p in index.annual_period_ends(since)][-max_periods:]
+    rows_here = 0
+    for period_end in periods:
+        for knowledge_date in index.knowledge_dates(period_end):
+            row = compute_row(conn, security, index, mapping, period_end, knowledge_date, config)
+            if row:
+                write_row(conn, row)
+                rows_here += 1
+    return rows_here
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Compute derived fundamentals")
     parser.add_argument("--db", default=str(migrate.DEFAULT_DB_PATH))
@@ -442,19 +460,11 @@ def main(argv: list[str] | None = None) -> int:
 
         written = 0
         for security in securities:
-            index = FactIndex(conn, security["cik"], all_concepts)
-            periods = [p for p in index.annual_period_ends(args.since)][-args.max_periods:]
-            rows_here = 0
-            for period_end in periods:
-                for knowledge_date in index.knowledge_dates(period_end):
-                    row = compute_row(
-                        conn, security, index, mapping, period_end, knowledge_date, config
-                    )
-                    if row:
-                        write_row(conn, row)
-                        rows_here += 1
+            rows_here = compute_for_security(
+                conn, security, all_concepts, mapping, config, args.since, args.max_periods
+            )
             written += rows_here
-            print(f"{security['symbol']:<8} periods={len(periods)} rows={rows_here}")
+            print(f"{security['symbol']:<8} rows={rows_here}")
 
         conn.execute(
             "UPDATE pipeline_runs SET status='success', finished_at=?, records_written=? "

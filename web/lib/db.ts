@@ -1360,3 +1360,183 @@ export function getFixtureCoverageInSnapshot(snapshotId: string) {
     total: fixtureTotal.rows[0]?.n ?? 0,
   };
 }
+
+// ------------------------------------------------------- S2: coverage reporting
+
+export type SourceCoverage = { source: string; covered: number; total: number; pct: number };
+export type MetricCoverage = {
+  metric: string;
+  validCount: number;
+  total: number;
+  pct: number;
+  nullReasons: { reason: string; count: number }[];
+};
+export type StalenessBucket = { bucket: string; count: number };
+export type WorstCoverageRow = {
+  security_id: number;
+  symbol: string | null;
+  sourcesPresent: number;
+  sourcesTotal: number;
+  missing: string[];
+};
+
+const COVERAGE_SOURCES: { key: string; table: string; joinOnCik: boolean }[] = [
+  { key: "prices", table: "prices", joinOnCik: false },
+  { key: "form4", table: "insider_transactions", joinOnCik: false },
+  { key: "xbrl", table: "xbrl_facts", joinOnCik: true },
+  { key: "fundamentals", table: "derived_fundamentals", joinOnCik: false },
+];
+
+/** Per source and per metric coverage across the given snapshot's population
+ * (everyone evaluated, included or excluded), plus staleness and the
+ * securities with the worst coverage. "Valid data" means at least one row in
+ * the relevant table for prices/form4/xbrl/fundamentals-any; a metric's
+ * validity is its own value being non-null in the latest derived_fundamentals
+ * row for that security. */
+export function getCoverageReport(snapshotId: string) {
+  const safe = String(snapshotId).replace(/[^A-Za-z0-9_-]/g, "");
+  const population = readAll<{ security_id: number; symbol: string | null; cik: string | null }>(
+    "universe_snapshots",
+    `SELECT sn.security_id, l.symbol, s.cik
+       FROM universe_snapshots sn
+       JOIN securities s ON s.security_id = sn.security_id
+       LEFT JOIN listings l ON l.security_id = sn.security_id AND l.valid_to IS NULL
+      WHERE sn.snapshot_id = '${safe}'`,
+  );
+  if (population.rows.length === 0) {
+    return {
+      status: population.status, total: 0, bySource: [] as SourceCoverage[],
+      byMetric: [] as MetricCoverage[], staleness: [] as StalenessBucket[],
+      worst: [] as WorstCoverageRow[],
+    };
+  }
+  const total = population.rows.length;
+  const ids = population.rows.map((r) => r.security_id);
+  const idList = ids.join(",");
+  const bySecurity = new Map(population.rows.map((r) => [r.security_id, r]));
+
+  const bySource: SourceCoverage[] = COVERAGE_SOURCES.map(({ key, table, joinOnCik }) => {
+    const set: Set<string | number> = joinOnCik
+      ? new Set(
+          readAll<{ cik: string }>(
+            table, `SELECT DISTINCT cik FROM ${table} WHERE cik IS NOT NULL`,
+          ).rows.map((r) => r.cik),
+        )
+      : new Set(
+          readAll<{ security_id: number }>(
+            table,
+            `SELECT DISTINCT security_id FROM ${table} WHERE security_id IN (${idList})`,
+          ).rows.map((r) => r.security_id),
+        );
+    const covered = joinOnCik
+      ? population.rows.filter((r) => r.cik && set.has(r.cik)).length
+      : population.rows.filter((r) => set.has(r.security_id)).length;
+    return { source: key, covered, total, pct: total ? (100 * covered) / total : 0 };
+  });
+
+  const byMetric: MetricCoverage[] = SCALAR_METRICS.map((metric) => {
+    const rows = readAll<{ security_id: number; value: number | null; missing_fields_json: string | null }>(
+      "derived_fundamentals",
+      `SELECT security_id, ${metric} AS value, missing_fields_json FROM derived_fundamentals
+        WHERE security_id IN (${idList})
+          AND knowledge_date = (
+            SELECT MAX(d2.knowledge_date) FROM derived_fundamentals d2
+             WHERE d2.security_id = derived_fundamentals.security_id
+          )`,
+    ).rows;
+    const bestPerSecurity = new Map<number, { value: number | null; missing_fields_json: string | null }>();
+    for (const row of rows) {
+      if (!bestPerSecurity.has(row.security_id)) bestPerSecurity.set(row.security_id, row);
+    }
+    let validCount = 0;
+    const reasonCounts = new Map<string, number>();
+    for (const row of bestPerSecurity.values()) {
+      if (row.value !== null) {
+        validCount += 1;
+        continue;
+      }
+      let reason = "unknown";
+      try {
+        const missing = row.missing_fields_json ? JSON.parse(row.missing_fields_json) : null;
+        if (missing && typeof missing === "object" && metric in missing) {
+          reason = String(missing[metric]);
+        }
+      } catch {
+        reason = "unknown";
+      }
+      reasonCounts.set(reason, (reasonCounts.get(reason) ?? 0) + 1);
+    }
+    return {
+      metric,
+      validCount,
+      total,
+      pct: total ? (100 * validCount) / total : 0,
+      nullReasons: [...reasonCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([reason, count]) => ({ reason, count })),
+    };
+  });
+
+  const staleRows = readAll<{ security_id: number; latest_date: string | null }>(
+    "prices",
+    `SELECT security_id, MAX(date) AS latest_date FROM prices
+      WHERE security_id IN (${idList}) GROUP BY security_id`,
+  ).rows;
+  const staleBySecurity = new Map(staleRows.map((r) => [r.security_id, r.latest_date]));
+  const todayMs = Date.now();
+  const buckets: Record<string, number> = { "0-1d": 0, "1-3d": 0, "3-7d": 0, "7d+": 0, "no data": 0 };
+  for (const id of ids) {
+    const latest = staleBySecurity.get(id);
+    if (!latest) {
+      buckets["no data"] += 1;
+      continue;
+    }
+    const days = (todayMs - new Date(latest + "T00:00:00Z").getTime()) / 86_400_000;
+    if (days <= 1) buckets["0-1d"] += 1;
+    else if (days <= 3) buckets["1-3d"] += 1;
+    else if (days <= 7) buckets["3-7d"] += 1;
+    else buckets["7d+"] += 1;
+  }
+  const staleness = Object.entries(buckets).map(([bucket, count]) => ({ bucket, count }));
+
+  const presentBySource = new Map<number, Set<string>>();
+  for (const id of ids) presentBySource.set(id, new Set());
+  for (const { key, table, joinOnCik } of COVERAGE_SOURCES) {
+    if (joinOnCik) {
+      const ciksPresent = new Set(
+        readAll<{ cik: string }>(table, `SELECT DISTINCT cik FROM ${table} WHERE cik IS NOT NULL`).rows.map(
+          (r) => r.cik,
+        ),
+      );
+      for (const row of population.rows) {
+        if (row.cik && ciksPresent.has(row.cik)) presentBySource.get(row.security_id)!.add(key);
+      }
+    } else {
+      const idsPresent = new Set(
+        readAll<{ security_id: number }>(
+          table, `SELECT DISTINCT security_id FROM ${table} WHERE security_id IN (${idList})`,
+        ).rows.map((r) => r.security_id),
+      );
+      for (const id of ids) {
+        if (idsPresent.has(id)) presentBySource.get(id)!.add(key);
+      }
+    }
+  }
+  const worst: WorstCoverageRow[] = ids
+    .map((id) => {
+      const present = presentBySource.get(id) ?? new Set<string>();
+      const missing = COVERAGE_SOURCES.map((s) => s.key).filter((k) => !present.has(k));
+      return {
+        security_id: id,
+        symbol: bySecurity.get(id)?.symbol ?? null,
+        sourcesPresent: present.size,
+        sourcesTotal: COVERAGE_SOURCES.length,
+        missing,
+      };
+    })
+    .filter((row) => row.sourcesPresent < row.sourcesTotal)
+    .sort((a, b) => a.sourcesPresent - b.sourcesPresent)
+    .slice(0, 20);
+
+  return { status: population.status, total, bySource, byMetric, staleness, worst };
+}

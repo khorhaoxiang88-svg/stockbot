@@ -247,6 +247,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default=str(migrate.DEFAULT_DB_PATH))
     parser.add_argument("--since", default=SINCE_DEFAULT)
     parser.add_argument("--symbols", nargs="*")
+    parser.add_argument(
+        "--pool",
+        default=None,
+        help="ingest a universe_candidate_pool version instead of the Phase F fixture "
+        "(e.g. s1-sample-v1); does not touch fixture_manifest",
+    )
     args = parser.parse_args(argv)
 
     load_dotenv_into_environ()
@@ -262,7 +268,12 @@ def main(argv: list[str] | None = None) -> int:
             "VALUES (?, 'insider', ?, 'running', 'form4')",
             (run_id, utc_now()),
         )
-        securities = fixture_securities(conn)
+        if args.pool:
+            from universe.pool import pool_securities
+
+            securities = pool_securities(conn, args.pool)
+        else:
+            securities = fixture_securities(conn)
         if args.symbols:
             wanted = {s.upper() for s in args.symbols}
             securities = [s for s in securities if s["symbol"].upper() in wanted]

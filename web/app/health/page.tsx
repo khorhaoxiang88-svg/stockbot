@@ -19,10 +19,12 @@ import {
 import { tryLoadConfig } from "@/lib/config";
 import {
   getAppliedMigrations,
+  getCoverageReport,
   getFilingVerificationCount,
   getFixtureConfidenceCounts,
   getFixtureRows,
   getFixtureTypeCounts,
+  getLatestUniverseSnapshotRun,
   getLatestVerificationResults,
   getLatestVerificationRun,
   getRecentRuns,
@@ -87,6 +89,10 @@ export default async function HealthPage() {
   const verificationResults = getLatestVerificationResults();
   const verificationRun = getLatestVerificationRun();
   const filingVerifications = getFilingVerificationCount();
+  const latestSnapshot = getLatestUniverseSnapshotRun("monthly_membership");
+  const coverage = latestSnapshot.row
+    ? getCoverageReport(latestSnapshot.row.snapshot_id)
+    : null;
 
   const dbState = sources.status.state;
 
@@ -497,6 +503,126 @@ export default async function HealthPage() {
                 );
               })}
             </div>
+          </>
+        )}
+      </section>
+
+      <section className="mb-14 space-y-6">
+        <h2>S2: coverage across the universe</h2>
+        <p className="max-w-3xl text-muted-foreground">
+          Per source and per metric, for the latest monthly universe snapshot&rsquo;s
+          full population (included and excluded alike, since a coverage gap is
+          worth seeing whether or not the security made it in).
+        </p>
+
+        {!coverage || coverage.total === 0 ? (
+          <p className="rounded-lg border border-dashed border-border px-6 py-8 text-muted-foreground">
+            No universe snapshot yet. Run pipeline/universe/membership.py to
+            produce one before coverage can be measured.
+          </p>
+        ) : (
+          <>
+            <div className="grid gap-3 md:grid-cols-4">
+              {coverage.bySource.map((row) => (
+                <div key={row.source} className="rounded-lg border border-border p-4">
+                  <div className="text-sm text-muted-foreground">{row.source}</div>
+                  <div className="mt-1 text-2xl font-semibold">{row.pct.toFixed(0)}%</div>
+                  <div className="text-xs text-muted-foreground">
+                    {row.covered} of {row.total}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <details className="rounded-lg border border-border p-4">
+              <summary className="cursor-pointer font-medium">
+                Per-metric coverage ({coverage.byMetric.length} metrics)
+              </summary>
+              <div className="mt-3 overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Metric</TableHead>
+                      <TableHead className="text-right">Coverage</TableHead>
+                      <TableHead>Null reasons</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {coverage.byMetric.map((row) => (
+                      <TableRow key={row.metric}>
+                        <TableCell className="font-mono text-sm">{row.metric}</TableCell>
+                        <TableCell className="text-right font-mono">
+                          {row.pct.toFixed(0)}% ({row.validCount}/{row.total})
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {row.nullReasons.length === 0
+                            ? "—"
+                            : row.nullReasons
+                                .map((r) => `${r.reason} (${r.count})`)
+                                .join(", ")}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </details>
+
+            <details className="rounded-lg border border-border p-4">
+              <summary className="cursor-pointer font-medium">
+                Price staleness distribution
+              </summary>
+              <div className="mt-3 flex flex-wrap gap-3">
+                {coverage.staleness.map((bucket) => (
+                  <Badge key={bucket.bucket} variant="outline" className="px-3 py-1 font-mono">
+                    {bucket.bucket}: {bucket.count}
+                  </Badge>
+                ))}
+              </div>
+            </details>
+
+            <details className="rounded-lg border border-border p-4" open>
+              <summary className="cursor-pointer font-medium">
+                Worst coverage ({coverage.worst.length} securities below full coverage)
+              </summary>
+              {coverage.worst.length === 0 ? (
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Every evaluated security has data from every source.
+                </p>
+              ) : (
+                <div className="mt-3 overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Security</TableHead>
+                        <TableHead className="text-right">Sources present</TableHead>
+                        <TableHead>Missing</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {coverage.worst.map((row) => (
+                        <TableRow key={row.security_id}>
+                          <TableCell>
+                            <Link
+                              href={`/security/${row.security_id}`}
+                              className="underline underline-offset-4"
+                            >
+                              {row.symbol ?? row.security_id}
+                            </Link>
+                          </TableCell>
+                          <TableCell className="text-right font-mono">
+                            {row.sourcesPresent}/{row.sourcesTotal}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {row.missing.join(", ")}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </details>
           </>
         )}
       </section>

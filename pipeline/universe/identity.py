@@ -77,13 +77,43 @@ def add_listing(
     valid_to: str | None = None,
     is_primary: bool = True,
 ) -> None:
+    """Open a new listing window, closing any other currently-open window for
+    this security first.
+
+    Without this, re-discovering the same security on a later date opens a
+    SECOND valid_to IS NULL row rather than replacing the first: the PK is
+    (security_id, symbol, valid_from), so a re-run on a new day inserts
+    alongside the old row instead of over it. Found at S2 real-sample scale
+    -- MSFT, PG, CAT and ten others already had a current listing from an
+    earlier pool-discovery run when the pool was re-run a day later, and
+    every query that assumes "at most one current listing per security"
+    (current_listing(), pool_securities(), current_symbol()) silently
+    cartesian-duplicates that security from then on. Re-confirming the SAME
+    symbol as already current is a no-op; a genuinely different symbol closes
+    the old window at this row's valid_from before opening the new one.
+    """
+    symbol = symbol.upper()
+    if valid_to is None:
+        open_rows = conn.execute(
+            "SELECT symbol FROM listings WHERE security_id = ? AND valid_to IS NULL",
+            (security_id,),
+        ).fetchall()
+        for row in open_rows:
+            if row[0] == symbol:
+                return  # already the current listing; nothing to change
+            conn.execute(
+                "UPDATE listings SET valid_to = ? "
+                "WHERE security_id = ? AND symbol = ? AND valid_to IS NULL",
+                (valid_from, security_id, row[0]),
+            )
+
     conn.execute(
         """
         INSERT OR REPLACE INTO listings
             (security_id, symbol, exchange, valid_from, valid_to, is_primary)
         VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (security_id, symbol.upper(), exchange, valid_from, valid_to, 1 if is_primary else 0),
+        (security_id, symbol, exchange, valid_from, valid_to, 1 if is_primary else 0),
     )
 
 

@@ -41,11 +41,14 @@ database, not in git; see
 below.
 
 **Phase S has started.** S1 (migration 016) replaces the fixture with a
-rules-based universe, still non-official. A real 200-security sample plus the
-50-fixture has been evaluated: 125 included, 125 excluded, all 50 fixture
-securities accounted for. The full multi-thousand-ticker candidate set is not
-yet ingested — see
-[S1: rules-based universe](#s1-rules-based-universe-migration-016) below.
+rules-based universe, still non-official. S2 (migration 017) adds resumable,
+rate-limited orchestration and has run twice for real: 250 securities (zero
+failures, 48.7 min) and 700 more (zero failures, 4h20m). 937 securities
+evaluated total: 367 included, 570 excluded, all 50 fixture securities
+accounted for. The full multi-thousand-ticker candidate set is not yet
+ingested — see
+[S1: rules-based universe](#s1-rules-based-universe-migration-016) and
+[S2: scaled ingestion](#s2-scaled-ingestion-migration-017) below.
 
 ---
 
@@ -80,6 +83,7 @@ stockbot/
                           mid-hold, exits, and delisting resolution.
     verification/         The ten Phase F exit-criteria checks and the harness
                           that runs and records them.
+    orchestrate/          (S2) Resumable, rate-limited scaled ingestion.
     tests/                pytest suite.
   data/                   SQLite database and raw payloads. Never committed.
     stockbot.db
@@ -274,6 +278,7 @@ The fifteen applied migrations, and what each one owns:
 | 014 | two triggers backstopping "at most one open position per (security, horizon)" at the storage layer |
 | 015 | `verification_results`, `filing_verifications` (+ `latest_verification_results`) |
 | 016 | `universe_candidate_pool`, `universe_membership_changes`; adds `run_type` to `universe_snapshot_runs`; rebuild of `universe_snapshots` to require a reason for `watch` too |
+| 017 | `orchestration_progress` |
 
 Migration 001 creates operations tables only. Every market-data table arrives
 from 002 onward.
@@ -1452,6 +1457,82 @@ snapshot; an exclusion-reason breakdown; the monthly membership change log.
 rebuilt `universe_snapshots`' CHECK to cover `watch` too, since the
 migration-002 version only required one for `excluded`.
 
+## S2: scaled ingestion (migration 017)
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/orchestrate/run.py --tier all --pool <version> --batch-id <id>
+```
+
+No new ingest logic. `pipeline/orchestrate/run.py` calls the SAME per-item
+functions F3-F5/insider/S1 already use (`ingest_securities`, `ingest_security`,
+`ingest_company`, `compute_for_security`, `compute_snapshot`), adding only what
+they lacked for real scale: a per-item transaction (so a kill loses at most
+one item, not the whole batch), resumability via `orchestration_progress`
+keyed by a caller-supplied `batch_id`, a circuit breaker that aborts a tier
+after 5 consecutive failures, and one `pipeline_runs` row per tier per
+invocation. Re-invoking with the same `batch_id` skips items already
+`success` and retries `failed` ones — proven by fault injection
+(`pipeline/tests/test_orchestrate.py`), not a live kill test: this platform's
+`kill -9` from Git Bash does not reliably reach a Windows `python.exe`
+subprocess, and a deterministic raised-exception-mid-batch is the same
+property under test either way.
+
+### Two real runs, not a synthetic benchmark
+
+1. **250 securities** (the S1 pool + fixture), all four tiers, **zero
+   failures**, 48.7 minutes. Form 4 dominates (44 of the 48.7 minutes) — each
+   company needs a submissions fetch plus every Form 4 document, one at a
+   time under the SEC's own rate ceiling. XBRL was mostly cache hits
+   ("payload unchanged") since S1 had already ingested most of this pool.
+2. **700 new securities** (`s2-slice-v1`, a fresh stride sample), all four
+   tiers, **zero failures**, 259.7 minutes (4h20m). Same shape: prices ~5
+   min, Form 4 ~3h2m, XBRL ~1h8m (now doing real work, not cache hits),
+   universe <1 min.
+
+Both runs are real network activity against live SEC and Yahoo endpoints, at
+the scale the manual checklist asks for ("coverage above 80%", "no repeated
+consecutive failures") — not a mocked or synthetic stand-in.
+
+### Two more bugs, found only at this scale
+
+1. **`add_listing` opened a second "current" listing window** instead of
+   replacing the first. The PK is `(security_id, symbol, valid_from)`;
+   re-running pool discovery on a LATER date for an already-current symbol
+   (MSFT, PG, CAT, and ten others) inserted a new `valid_to IS NULL` row
+   alongside the old one rather than over it, since `valid_from` differed.
+   Every query assuming "at most one current listing per security" — which
+   is most of them — would have silently cartesian-duplicated these
+   securities the moment the pool was re-run a day later. Fixed:
+   `add_listing` now closes any other open window first (no-op if the symbol
+   is already current, closes-then-opens on a genuine symbol change). Found
+   and repaired before the 700-security run, not after.
+2. Not a bug: `fundamentals/compute.py` was never one of S2's four named
+   tiers (prices, Form 4, XBRL, universe), so per-metric fundamentals
+   coverage read 21% right after the 700-security run — correct, since only
+   raw XBRL facts had been ingested, not the derived layer on top. Running
+   `fundamentals/compute.py --pool s2-slice-v1` (pure local computation, the
+   facts were already there — no new network calls) brought it to 74%. The
+   remaining gap is the same securities that have no XBRL at all (SPY and
+   several closed-end funds, confirmed via S1's investigation), not a new
+   issue.
+
+### Real coverage, full population (937 securities: fixture + both pools)
+
+prices 99% (932/937), Form 4 87% (816/937), XBRL 94% (885/937), fundamentals
+74% (691/937, explained above). `ADIG` is the one security with zero data
+anywhere (0/4 sources) — investigated directly: it has no yfinance price
+history at all, a genuine thin/new-listing gap, not an ingestion failure
+(`orchestration_progress` correctly recorded it as `success` with zero rows
+returned, which is what "the source has nothing" looks like — not something
+to keep retrying).
+
+### `/health` coverage reporting
+
+Per source and per metric coverage, null reasons by metric (from
+`missing_fields_json`), a price-staleness distribution, and the 20
+worst-covered securities with what's missing for each — computed against the
+latest monthly snapshot's full population, included and excluded alike.
+
 ## Traps already paid for
 
 These cost real debugging time. They are recorded so they are not rediscovered.
@@ -1489,6 +1570,12 @@ These cost real debugging time. They are recorded so they are not rediscovered.
   existing security on that pair alone silently merges the two the first
   time both are loaded under one CIK. `security_type` must be part of the
   match — found via Arbor Realty Trust (ABR common vs. ABR$D preferred).
+- **`add_listing` must close a security's OTHER open listing window before
+  opening a new one**, even for the SAME symbol re-confirmed on a later date.
+  The PK is `(security_id, symbol, valid_from)`, so re-discovering an
+  already-current symbol on a new day inserted a second `valid_to IS NULL`
+  row instead of replacing the first — found at S2 real-sample scale (MSFT,
+  PG, CAT and ten others), before it reached the expensive 700-security run.
 - **A `dei:EntityCommonStockSharesOutstanding` instant of exactly 0 is a real
   filed value**, not a sentinel for "unknown" — HVT.A's 2012 filing
   (accession `0000216085-12-000014`) tags it literally. Treating it as

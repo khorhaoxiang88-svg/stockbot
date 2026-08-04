@@ -138,6 +138,45 @@ def test_common_stock_and_preferred_share_never_collapse_to_one_security_id(conn
     ) == preferred_id
 
 
+def test_readding_the_same_current_symbol_does_not_open_a_second_window(conn):
+    """Regression: found at S2 real-sample scale. Re-running pool discovery
+    on a later date for an already-current symbol (MSFT, PG, CAT, ...) opened
+    a second valid_to IS NULL row instead of leaving the first alone, since
+    the PK includes valid_from and the two calls used different dates."""
+    msft = make_security(conn, "Microsoft Corporation", cik="0000789019")
+    identity.add_listing(conn, security_id=msft, symbol="MSFT", exchange="Nasdaq",
+                          valid_from="2020-01-01")
+
+    identity.add_listing(conn, security_id=msft, symbol="MSFT", exchange="Nasdaq",
+                          valid_from="2026-08-04")
+
+    open_rows = conn.execute(
+        "SELECT symbol, valid_from FROM listings WHERE security_id = ? AND valid_to IS NULL",
+        (msft,),
+    ).fetchall()
+    assert len(open_rows) == 1, "re-confirming the same current symbol must not add a second row"
+    assert open_rows[0]["valid_from"] == "2020-01-01", "the original window must be left alone"
+
+
+def test_a_genuine_symbol_change_closes_the_old_window_first(conn):
+    company = make_security(conn, "Renamed Co", cik="0000000099")
+    identity.add_listing(conn, security_id=company, symbol="OLD", exchange="Nasdaq",
+                          valid_from="2020-01-01")
+
+    identity.add_listing(conn, security_id=company, symbol="NEW", exchange="Nasdaq",
+                          valid_from="2026-08-04")
+
+    old_row = conn.execute(
+        "SELECT valid_to FROM listings WHERE security_id = ? AND symbol = 'OLD'", (company,),
+    ).fetchone()
+    assert old_row["valid_to"] == "2026-08-04"
+
+    open_rows = conn.execute(
+        "SELECT symbol FROM listings WHERE security_id = ? AND valid_to IS NULL", (company,),
+    ).fetchall()
+    assert [r["symbol"] for r in open_rows] == ["NEW"]
+
+
 def test_valid_to_is_exclusive(conn):
     security = make_security(conn, "Edge Case Inc.")
     identity.add_listing(
