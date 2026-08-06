@@ -11,15 +11,19 @@ import {
 } from "@/components/ui/table";
 import {
   EXECUTION_PROTOCOL_VERSION,
-  getBenchmarkPositions,
+  getActiveExperiment,
   getBooks,
   getCancelledEntries,
-  getPaperPositions,
+  getOfficialBenchmarkPositions,
+  getOfficialPaperPositions,
+  getPreLaunchBenchmarkPositions,
+  getPreLaunchPaperPositions,
   getUniqueOriginatingCandidateCount,
   type BenchmarkPosition,
   type Book,
   type PaperPosition,
 } from "@/lib/db";
+import { formatEastern } from "@/lib/time";
 import {
   averageWinLoss,
   maxDrawdown,
@@ -410,21 +414,33 @@ export default async function PerformancePage() {
   const books = getBooks();
   const cancelled = getCancelledEntries();
   const uniqueCandidates = getUniqueOriginatingCandidateCount();
+  const { row: experiment } = getActiveExperiment();
   const horizons = books.rows.length ? books.rows.map((b) => b.horizon_days) : [20, 60];
 
-  const perHorizon = horizons.map((horizon) => ({
+  const perHorizonOfficial = horizons.map((horizon) => ({
     horizon,
     book: books.rows.find((b) => b.horizon_days === horizon),
-    positions: getPaperPositions(horizon).rows,
-    benchmarks: getBenchmarkPositions(horizon).rows,
+    positions: getOfficialPaperPositions(horizon).rows,
+    benchmarks: getOfficialBenchmarkPositions(horizon).rows,
+  }));
+  const perHorizonPreLaunch = horizons.map((horizon) => ({
+    horizon,
+    book: books.rows.find((b) => b.horizon_days === horizon),
+    positions: getPreLaunchPaperPositions(horizon).rows,
+    benchmarks: getPreLaunchBenchmarkPositions(horizon).rows,
   }));
 
-  const totalPositions = perHorizon.reduce((s, h) => s + h.positions.length, 0);
-  const cancelledByHorizon = new Map<number, number>();
+  const totalOfficialPositions = perHorizonOfficial.reduce((s, h) => s + h.positions.length, 0);
+  const totalPreLaunchPositions = perHorizonPreLaunch.reduce((s, h) => s + h.positions.length, 0);
+
   // A cancellation applies to every horizon a candidate was permitted into, but
   // cancelled_entries itself carries no horizon — it is per candidate, logged
   // once. Reported per horizon here as "cancelled before this book could open
   // a position", which is what a cancellation means for every book equally.
+  // Cancellations pre-date official/pre-launch separation in the schema (no
+  // candidate has ever been cancelled under an official run yet), so the same
+  // total is shown against both sections rather than invented as zero.
+  const cancelledByHorizon = new Map<number, number>();
   for (const horizon of horizons) cancelledByHorizon.set(horizon, cancelled.rows.length);
 
   return (
@@ -455,25 +471,74 @@ export default async function PerformancePage() {
         </p>
       </div>
 
-      {totalPositions === 0 && cancelled.rows.length === 0 ? (
-        <EmptyState>
-          No data yet. Zero candidates have been selected for execution (the
-          current weekly selection produced none — see /candidates for why), so
-          there is nothing to execute or resolve. This is the correct state of
-          the protocol proving its own gates, not a missing feature.
-        </EmptyState>
-      ) : (
-        perHorizon.map((h) => (
-          <HorizonSection
-            key={h.horizon}
-            horizon={h.horizon}
-            book={h.book}
-            positions={h.positions}
-            benchmarks={h.benchmarks}
-            cancelledForHorizon={cancelledByHorizon.get(h.horizon) ?? 0}
-          />
-        ))
-      )}
+      <section className="mb-14">
+        <h2 className="mb-3">Official results</h2>
+        {experiment ? (
+          <p className="mb-6 text-sm text-muted-foreground">
+            Experiment <span className="font-mono">{experiment.experiment_id}</span>, live
+            since {formatEastern(experiment.started_at)} (strategy v
+            {experiment.strategy_version}). Only candidates generated at or after that
+            instant, under a genuine official run, ever appear below —
+            official_candidates / official_positions (migration 022) enforce this at
+            the query layer, not by convention.
+          </p>
+        ) : (
+          <p className="mb-6 text-sm text-muted-foreground">
+            No official experiment has launched yet (pipeline/launch/open_experiment.py
+            has not run). Zero official trades is the correct state, not a missing
+            feature.
+          </p>
+        )}
+        {totalOfficialPositions === 0 ? (
+          <EmptyState>
+            No official trades yet.{" "}
+            {experiment
+              ? "The official run has not filled a position yet."
+              : "The experiment has not opened."}
+          </EmptyState>
+        ) : (
+          perHorizonOfficial.map((h) => (
+            <HorizonSection
+              key={h.horizon}
+              horizon={h.horizon}
+              book={h.book}
+              positions={h.positions}
+              benchmarks={h.benchmarks}
+              cancelledForHorizon={0}
+            />
+          ))
+        )}
+      </section>
+
+      <section className="border-t border-border pt-10">
+        <h2 className="mb-3 text-muted-foreground">
+          Pre-launch results (Phase F fixture / Phase S paper trades)
+        </h2>
+        <p className="mb-6 text-sm text-muted-foreground">
+          Permanently excluded from official statistics — never merged, backfilled or
+          retroactively counted into the section above, no matter what happens later.
+          Shown here only as engineering validation of the protocol itself.
+        </p>
+        {totalPreLaunchPositions === 0 && cancelled.rows.length === 0 ? (
+          <EmptyState>
+            No data yet. Zero candidates have been selected for execution (the
+            current weekly selection produced none — see /candidates for why), so
+            there is nothing to execute or resolve. This is the correct state of
+            the protocol proving its own gates, not a missing feature.
+          </EmptyState>
+        ) : (
+          perHorizonPreLaunch.map((h) => (
+            <HorizonSection
+              key={h.horizon}
+              horizon={h.horizon}
+              book={h.book}
+              positions={h.positions}
+              benchmarks={h.benchmarks}
+              cancelledForHorizon={cancelledByHorizon.get(h.horizon) ?? 0}
+            />
+          ))
+        )}
+      </section>
     </main>
   );
 }

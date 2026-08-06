@@ -487,11 +487,21 @@ def compute_snapshot(
     pool_versions: list[str] | None = None,
     rules_version: str = "s1-v1",
     extra_security_ids: list[int] | None = None,
+    is_official: bool = False,
 ) -> str:
     """Compute and persist one snapshot. Returns the new snapshot_id.
 
     Never updates or deletes a prior snapshot row -- every run is a fresh
     INSERT, so "nothing is ever removed retroactively" holds structurally.
+
+    is_official defaults False: every S1/S2 monthly_membership/daily_safety
+    run is explicitly non-official, as it always has been. It is True for
+    exactly one call, made by pipeline/launch/open_experiment.py, which marks
+    the first membership snapshot of the forward-trading universe -- a
+    different "official" than universe_snapshot_runs.is_official already
+    carries for F8's scoring comparison-population snapshot (ensure_snapshot,
+    scoring/compute.py); the two are disambiguated downstream by run_type,
+    which F8's snapshot never sets.
     """
     if run_type not in ("monthly_membership", "daily_safety"):
         raise MembershipError(f"unknown run_type {run_type!r}")
@@ -506,9 +516,10 @@ def compute_snapshot(
         INSERT INTO universe_snapshot_runs
             (snapshot_id, effective_at, rules_version, config_hash, run_id,
              security_count, is_official, run_type)
-        VALUES (?, ?, ?, ?, NULL, ?, 0, ?)
+        VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
         """,
-        (snapshot_id, now, rules_version, config_hash(), len(securities), run_type),
+        (snapshot_id, now, rules_version, config_hash(), len(securities),
+         1 if is_official else 0, run_type),
     )
 
     changes: list[dict[str, Any]] = []

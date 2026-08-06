@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
+import { ExperimentBanner } from "@/components/experiment-banner";
 import { PhaseBanner } from "@/components/phase-banner";
 
 import "./globals.css";
@@ -30,6 +31,7 @@ export default function RootLayout({
     <html lang="en" className="dark">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <PhaseBanner />
+        <ExperimentBanner />
         {children}
       </body>
     </html>

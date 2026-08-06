@@ -119,6 +119,33 @@ export function getFrozenConfigLocks() {
   );
 }
 
+export type Experiment = {
+  experiment_id: string;
+  strategy_version: number;
+  selection_rule_version: number;
+  protocol_version: number;
+  config_hash: string;
+  started_at: string; // UTC ISO-8601
+  ended_at: string | null;
+  status: "active" | "ended" | "compromised";
+  compromised_reason: string | null;
+};
+
+/** The active experiment, if one has been opened -- migration 022. At most
+ * one row can ever have status='active' (partial unique index). */
+export function getActiveExperiment() {
+  const result = readAll<Experiment>(
+    "experiments",
+    `SELECT experiment_id, strategy_version, selection_rule_version,
+            protocol_version, config_hash, started_at, ended_at, status,
+            compromised_reason
+       FROM experiments
+      WHERE status = 'active'
+      LIMIT 1`,
+  );
+  return { status: result.status, row: result.rows[0] ?? null };
+}
+
 export type Security = {
   security_id: number;
   cik: string | null;
@@ -1042,6 +1069,84 @@ export function getBenchmarkPositions(horizonDays: number) {
     `SELECT position_id, candidate_id, horizon_days, entry_date, entry_price,
             status, exit_date, exit_price, net_pnl, pnl_pct
        FROM benchmark_positions WHERE horizon_days = ${h}
+      ORDER BY entry_date, position_id`,
+  );
+  return { status: result.status, rows: result.rows };
+}
+
+/**
+ * Official-only and pre-launch variants, migration 022. official_positions /
+ * official_benchmark_positions are the query-layer enforcement point: a row
+ * qualifies only if it came from a genuine official selection attempt AND was
+ * generated at or after the active experiment's started_at. Pre-launch is
+ * everything else -- the Phase F fixture and every Phase S paper trade,
+ * permanently excluded from official statistics, never merged into them. The
+ * existence check below names the real table (paper_positions /
+ * benchmark_positions), not the view, since readAll's tableExists guard only
+ * recognises type='table' in sqlite_master.
+ */
+export function getOfficialPaperPositions(horizonDays: number) {
+  const h = Number(horizonDays) || 0;
+  const result = readAll<PaperPosition>(
+    "paper_positions",
+    `SELECT p.position_id, p.candidate_id, p.horizon_days, p.book_id,
+            l.symbol, c.security_id,
+            json_extract(c.score_snapshot_json, '$.cohort_id') AS cohort_id,
+            p.entry_date, p.entry_price, p.slippage_bps, p.shares, p.notional,
+            p.stop_price, p.target_price, p.status, p.exit_date, p.exit_price,
+            p.exit_reason, p.dividends_received, p.splits_applied, p.gross_pnl,
+            p.net_pnl, p.pnl_pct, p.requires_manual_review
+       FROM official_positions p
+       JOIN research_candidates c ON c.candidate_id = p.candidate_id
+       LEFT JOIN listings l ON l.security_id = c.security_id AND l.valid_to IS NULL
+      WHERE p.horizon_days = ${h}
+      ORDER BY p.entry_date, p.position_id`,
+  );
+  return { status: result.status, rows: result.rows };
+}
+
+export function getPreLaunchPaperPositions(horizonDays: number) {
+  const h = Number(horizonDays) || 0;
+  const result = readAll<PaperPosition>(
+    "paper_positions",
+    `SELECT p.position_id, p.candidate_id, p.horizon_days, p.book_id,
+            l.symbol, c.security_id,
+            json_extract(c.score_snapshot_json, '$.cohort_id') AS cohort_id,
+            p.entry_date, p.entry_price, p.slippage_bps, p.shares, p.notional,
+            p.stop_price, p.target_price, p.status, p.exit_date, p.exit_price,
+            p.exit_reason, p.dividends_received, p.splits_applied, p.gross_pnl,
+            p.net_pnl, p.pnl_pct, p.requires_manual_review
+       FROM paper_positions p
+       JOIN research_candidates c ON c.candidate_id = p.candidate_id
+       LEFT JOIN listings l ON l.security_id = c.security_id AND l.valid_to IS NULL
+      WHERE p.horizon_days = ${h}
+        AND p.position_id NOT IN (SELECT position_id FROM official_positions)
+      ORDER BY p.entry_date, p.position_id`,
+  );
+  return { status: result.status, rows: result.rows };
+}
+
+export function getOfficialBenchmarkPositions(horizonDays: number) {
+  const h = Number(horizonDays) || 0;
+  const result = readAll<BenchmarkPosition>(
+    "benchmark_positions",
+    `SELECT position_id, candidate_id, horizon_days, entry_date, entry_price,
+            status, exit_date, exit_price, net_pnl, pnl_pct
+       FROM official_benchmark_positions WHERE horizon_days = ${h}
+      ORDER BY entry_date, position_id`,
+  );
+  return { status: result.status, rows: result.rows };
+}
+
+export function getPreLaunchBenchmarkPositions(horizonDays: number) {
+  const h = Number(horizonDays) || 0;
+  const result = readAll<BenchmarkPosition>(
+    "benchmark_positions",
+    `SELECT position_id, candidate_id, horizon_days, entry_date, entry_price,
+            status, exit_date, exit_price, net_pnl, pnl_pct
+       FROM benchmark_positions
+      WHERE horizon_days = ${h}
+        AND position_id NOT IN (SELECT position_id FROM official_benchmark_positions)
       ORDER BY entry_date, position_id`,
   );
   return { status: result.status, rows: result.rows };

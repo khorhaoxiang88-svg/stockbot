@@ -74,8 +74,9 @@ async function buildDatabase() {
       price_snapshot_hash, source_health_snapshot_json, score_snapshot_json,
       accessions_used_json, composite_at_generation, rank_at_generation, signal_close,
       atr_value, atr_window, price_data_cutoff, entry_rule, gap_limit_atr, row_hash)
-     VALUES (?, ?, 'x', '2026-01-30T20:00:00Z', 'snap-1', 'run-sel', 1, 'h', 'v', 1, '1',
-      1, 'psh', '{}', ?, '[]', 55.0, 1, 100.0, 3.0, 14, '2026-01-30', 'next_open', 1.0, 'rh')`,
+     VALUES (?, ?, '2026-01-30T20:00:00Z', '2026-01-30T20:00:00Z', 'snap-1', 'run-sel', 1, 'h',
+      'v', 1, '1', 1, 'psh', '{}', ?, '[]', 55.0, 1, 100.0, 3.0, 14, '2026-01-30',
+      'next_open', 1.0, 'rh')`,
   );
   insertCandidate.run("cand-win", 1, JSON.stringify({ cohort_id: "SIC-D" }));
   insertCandidate.run("cand-loss", 2, JSON.stringify({ cohort_id: "SIC-G" }));
@@ -271,5 +272,94 @@ describe("performance page", () => {
     const html = await renderPerformancePage();
     expect(html).toContain("No data yet");
     expect(html).toContain("protocol proving its own gates");
+  });
+});
+
+describe("official vs pre-launch separation (migration 022)", () => {
+  /**
+   * Every position buildDatabase() seeds is dated 2026-01-30/31 with a bare
+   * code_version ('v', no '+' suffix) -- an official-shaped candidate that
+   * simply predates any experiment. Opening an experiment AFTER those dates
+   * must move none of them into the official section: no pre-launch position
+   * may appear as official under any query, no matter how official-looking
+   * its own fields are.
+   */
+  async function openExperimentAfterFixtureDates() {
+    const { default: Database } = await import("better-sqlite3");
+    const db = new Database(dbPath);
+    db.prepare(
+      `INSERT INTO experiments (experiment_id, strategy_version, selection_rule_version,
+        protocol_version, config_hash, started_at, status)
+       VALUES ('exp-launch', 2, 2, 1, 'h', '2026-06-01T00:00:00Z', 'active')`,
+    ).run();
+    db.close();
+  }
+
+  async function insertOfficialTrade() {
+    const { default: Database } = await import("better-sqlite3");
+    const db = new Database(dbPath);
+    db.prepare(
+      `INSERT INTO research_candidates (candidate_id, security_id, generated_at,
+        data_cutoff_at, snapshot_id, pipeline_run_id, strategy_version, config_hash,
+        code_version, selection_rule_version, mapping_version, price_dataset_version,
+        price_snapshot_hash, source_health_snapshot_json, score_snapshot_json,
+        accessions_used_json, composite_at_generation, rank_at_generation, signal_close,
+        atr_value, atr_window, price_data_cutoff, entry_rule, gap_limit_atr, row_hash)
+       VALUES ('cand-official', 1, '2026-06-15T20:00:00Z', '2026-06-15T20:00:00Z', 'snap-1',
+        'run-sel', 2, 'h', 'selection-rule-1.1/v1', 2, '1', 1, 'psh', '{}',
+        '${JSON.stringify({ cohort_id: "SIC-D" })}', '[]', 90.0, 1, 500.0, 5.0, 14,
+        '2026-06-15', 'next_open', 1.0, 'rh2')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO paper_positions (position_id, candidate_id, horizon_days, book_id,
+        protocol_version, strategy_version, resolution_policy_version, accrual_policy_version,
+        price_snapshot_hash, opened_run_id, last_evaluated_at, entry_date, entry_price,
+        slippage_bps, shares, notional, stop_price, target_price, status, exit_date,
+        exit_price, exit_reason, dividends_received, splits_applied, gross_pnl, net_pnl,
+        pnl_pct, requires_manual_review)
+       VALUES ('pos-official', 'cand-official', 20, 'book-20d', 'R1-PROTOCOL-1.1', 2, 1, 1,
+        'psh', 'run-exec', 'x', '2026-06-16', 500.0, 5, 2, 1000, 460.0, 580.0, 'closed',
+        '2026-06-25', 555.55, 'target', 0, 1.0, 111.10, 111.10, 0.222, 0)`,
+    ).run();
+    db.close();
+  }
+
+  it("shows zero official trades before an experiment has launched", async () => {
+    await buildDatabase();
+    const html = await renderPerformancePage();
+    expect(html).toContain("Official results");
+    expect(html).toContain("No official trades yet");
+    expect(html).toContain("experiment has not opened");
+    // Every seeded position lands in the pre-launch section instead.
+    expect(html).toContain("Pre-launch results");
+  });
+
+  it("shows zero official trades on day one, right after launch, before any official fill", async () => {
+    await buildDatabase();
+    await openExperimentAfterFixtureDates();
+    const html = await renderPerformancePage();
+    expect(html).toContain("exp-launch");
+    expect(html).toContain("No official trades yet");
+    expect(html).not.toContain("111.10"); // no official trade inserted yet
+  });
+
+  it("never shows a pre-launch position as an official statistic, however official-shaped its own fields are", async () => {
+    await buildDatabase();
+    await openExperimentAfterFixtureDates();
+    await insertOfficialTrade();
+    const html = await renderPerformancePage();
+
+    const officialSection = html.split("Pre-launch results")[0];
+    const preLaunchSection = html.split("Pre-launch results")[1];
+
+    // The new, genuinely-official trade appears only in the official section.
+    expect(officialSection).toContain("555.55");
+    expect(preLaunchSection).not.toContain("555.55");
+
+    // Every pre-existing (pre-launch) position -- e.g. the fixture's win at
+    // exit_price 112.0 -- appears only in the pre-launch section, never in
+    // the official one, even though its code_version has no '+' suffix.
+    expect(preLaunchSection).toContain("112.0");
+    expect(officialSection).not.toContain("112.0");
   });
 });
