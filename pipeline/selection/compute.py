@@ -305,6 +305,51 @@ def check_evidence_cutoff(conn, accessions: list[str], cutoff_utc: str) -> list[
     return offending
 
 
+# ------------------------------------------------------------ frozen config lock
+
+
+def verify_frozen_config_lock(conn, cfg: dict, running_hash: str) -> None:
+    """Refuse to generate an OFFICIAL candidate if the running config does not
+    match the exact bytes locked in frozen_config_lock (migration 021) for
+    this strategy_version.
+
+    This is narrower than, and additional to, config_loader's existing
+    _governed_by/_version_digests check: that mechanism blocks LOADING the
+    config at all if a governed value drifts without a version bump, but a
+    config that bumps every version correctly can still drift from what was
+    actually calibrated. An official candidate generated under a config no
+    human actually locked in would carry a decision nobody reviewed, so this
+    checks the whole-file hash, not just the governed subset, and only for
+    runs that would produce official output (no --pool, no
+    --provisional-threshold).
+    """
+    strategy_version = int(cfg["strategy_version"])
+    row = conn.execute(
+        "SELECT config_hash, calibration_report_id, locked_at FROM frozen_config_lock "
+        "WHERE strategy_version = ?",
+        (strategy_version,),
+    ).fetchone()
+    if row is None:
+        raise SystemExit(
+            "REFUSING to generate official candidates: no frozen_config_lock row "
+            f"for strategy_version={strategy_version}. A calibration report and a "
+            "lock row (migration 021) must exist for this exact strategy_version "
+            "before an official selection run."
+        )
+    if running_hash != row["config_hash"]:
+        raise SystemExit(
+            "REFUSING to generate official candidates: config.frozen.json has "
+            f"changed since it was locked for strategy_version={strategy_version}.\n"
+            f"  locked config_hash:  {row['config_hash']}\n"
+            f"  running config_hash: {running_hash}\n"
+            f"  locked by calibration report {row['calibration_report_id']!r} "
+            f"at {row['locked_at']}\n"
+            "If this change is intentional: bump strategy_version, regenerate a "
+            "calibration report over the new config, and insert a new "
+            "frozen_config_lock row for the new version."
+        )
+
+
 # --------------------------------------------------------------------- books
 
 
@@ -329,6 +374,14 @@ def ensure_books(conn, cfg) -> dict[int, dict]:
 
 def run_selection(conn, cfg, args) -> dict:
     cfg_hash = config_hash(args.config)
+
+    # Startup check: an official run (real fixture population, no exploratory
+    # override) must match the exact config that was locked in for this
+    # strategy_version, checked before anything else runs.
+    is_official_attempt = args.pool is None and args.provisional_threshold is None
+    if is_official_attempt:
+        verify_frozen_config_lock(conn, cfg, cfg_hash)
+
     session_dates = [r[0] for r in conn.execute("SELECT DISTINCT date FROM prices ORDER BY date")]
     if not session_dates:
         raise SystemExit("no price sessions in the dataset; selection cannot run")

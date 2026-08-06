@@ -40,11 +40,11 @@ describe("frozen config (web loader)", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("reports composite_threshold as the outstanding placeholder", () => {
+  it("reports no pending placeholders now composite_threshold is frozen", () => {
     const result = tryLoadConfig(CONFIG_PATH);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.pendingPlaceholders).toEqual(["composite_threshold"]);
+      expect(result.pendingPlaceholders).toEqual([]);
     }
   });
 

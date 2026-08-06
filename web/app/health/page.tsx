@@ -24,6 +24,7 @@ import {
   getFixtureConfidenceCounts,
   getFixtureRows,
   getFixtureTypeCounts,
+  getFrozenConfigLocks,
   getLatestUniverseSnapshotRun,
   getLatestVerificationResults,
   getLatestVerificationRun,
@@ -81,6 +82,10 @@ export default async function HealthPage() {
   const runs = getRecentRuns();
   const migrations = getAppliedMigrations();
   const config = tryLoadConfig();
+  const configLocks = getFrozenConfigLocks();
+  const activeLock = config.ok
+    ? configLocks.rows.find((l) => l.strategy_version === config.config.strategy_version)
+    : undefined;
   const fixtureRows = getFixtureRows();
   const typeCounts = getFixtureTypeCounts();
   const confidenceCounts = getFixtureConfidenceCounts();
@@ -216,6 +221,57 @@ export default async function HealthPage() {
                     Placeholder still unset: {config.pendingPlaceholders.join(", ")}
                   </p>
                 )}
+
+                <div className="space-y-2">
+                  <span className="text-muted-foreground">
+                    config_hash (sha256 of the raw file)
+                  </span>
+                  <p className="break-all font-mono text-base">{config.configHash}</p>
+                </div>
+
+                <div className="space-y-2">
+                  <span className="text-muted-foreground">frozen_config_lock</span>
+                  {activeLock ? (
+                    activeLock.config_hash === config.configHash ? (
+                      <Badge
+                        variant="outline"
+                        className="border-emerald-400/40 bg-emerald-400/15 px-3 py-1 text-base text-emerald-200"
+                      >
+                        locked, hash matches
+                      </Badge>
+                    ) : (
+                      <Badge
+                        variant="outline"
+                        className="border-red-400/40 bg-red-400/15 px-3 py-1 text-base text-red-200"
+                      >
+                        MISMATCH — official candidate generation refuses
+                      </Badge>
+                    )
+                  ) : (
+                    <Badge
+                      variant="outline"
+                      className="border-amber-400/40 bg-amber-400/15 px-3 py-1 text-base text-amber-200"
+                    >
+                      no lock for strategy_version {String(config.config.strategy_version)}
+                    </Badge>
+                  )}
+                  {activeLock && (
+                    <p className="text-base text-muted-foreground">
+                      calibration report{" "}
+                      <span className="font-mono">{activeLock.calibration_report_id}</span>,
+                      locked {formatEastern(activeLock.locked_at)}
+                    </p>
+                  )}
+                </div>
+
+                <details className="space-y-2">
+                  <summary className="cursor-pointer text-muted-foreground">
+                    Full frozen configuration
+                  </summary>
+                  <pre className="overflow-x-auto rounded-md bg-muted/40 p-4 text-sm">
+                    {JSON.stringify(config.config, null, 2)}
+                  </pre>
+                </details>
               </>
             ) : (
               <p className="text-base text-red-200">{config.message}</p>

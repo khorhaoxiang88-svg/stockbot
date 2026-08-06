@@ -53,8 +53,10 @@ export const REQUIRED_KEYS = [
   "universe_price_data_max_gap_days",
 ] as const;
 
-/** Keys allowed to be null until the phase named in config._placeholders. */
-export const PLACEHOLDER_KEYS = ["composite_threshold"] as const;
+/** Keys allowed to be null until the phase named in config._placeholders.
+ * Empty: composite_threshold, the only entry this ever held, was frozen in
+ * Phase S4 -- see config.frozen.json's _decisions.composite_threshold. */
+export const PLACEHOLDER_KEYS: readonly string[] = [];
 
 /** Mirrors config_loader.VERSION_KEYS. */
 export const VERSION_KEYS = [
@@ -193,6 +195,17 @@ export function validateConfig(config: FrozenConfig, source = "config"): void {
   }
 }
 
+/**
+ * sha256 of the frozen config file's raw bytes. Mirrors
+ * pipeline/scoring/compute.config_hash exactly -- pins every parameter at
+ * once, not just the governed subset governedDigest covers. This is the
+ * hash frozen_config_lock (migration 021) records and selection/compute.py
+ * checks before generating an official candidate.
+ */
+export function wholeFileConfigHash(path: string = CONFIG_PATH): string {
+  return createHash("sha256").update(fs.readFileSync(path)).digest("hex");
+}
+
 export function loadConfig(path: string = CONFIG_PATH): FrozenConfig {
   if (!fs.existsSync(path)) {
     throw new ConfigError(`Config file not found: ${path}`);
@@ -213,7 +226,13 @@ export function loadConfig(path: string = CONFIG_PATH): FrozenConfig {
 }
 
 export type ConfigLoadResult =
-  | { ok: true; config: FrozenConfig; keyCount: number; pendingPlaceholders: string[] }
+  | {
+      ok: true;
+      config: FrozenConfig;
+      keyCount: number;
+      pendingPlaceholders: string[];
+      configHash: string;
+    }
   | { ok: false; message: string };
 
 /** Never throws. Used by the health page so a bad config is shown, not fatal. */
@@ -225,6 +244,7 @@ export function tryLoadConfig(path: string = CONFIG_PATH): ConfigLoadResult {
       config,
       keyCount: REQUIRED_KEYS.length,
       pendingPlaceholders: PLACEHOLDER_KEYS.filter((key) => config[key] === null),
+      configHash: wholeFileConfigHash(path),
     };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : String(error) };

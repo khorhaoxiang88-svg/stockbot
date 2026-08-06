@@ -100,6 +100,25 @@ export function getAppliedMigrations() {
   );
 }
 
+export type FrozenConfigLock = {
+  strategy_version: number;
+  selection_rule_version: number;
+  config_hash: string;
+  calibration_report_id: string;
+  locked_at: string; // UTC ISO-8601
+};
+
+/** Every lock row, newest strategy_version first -- migration 021. */
+export function getFrozenConfigLocks() {
+  return readAll<FrozenConfigLock>(
+    "frozen_config_lock",
+    `SELECT strategy_version, selection_rule_version, config_hash,
+            calibration_report_id, locked_at
+       FROM frozen_config_lock
+      ORDER BY strategy_version DESC`,
+  );
+}
+
 export type Security = {
   security_id: number;
   cik: string | null;

@@ -59,8 +59,10 @@ REQUIRED_KEYS: tuple[str, ...] = (
     "universe_price_data_max_gap_days",
 )
 
-# Keys allowed to be null right now. Each must be filled before Release 1 ships.
-PLACEHOLDER_KEYS: frozenset[str] = frozenset({"composite_threshold"})
+# Keys allowed to be null right now. Empty: composite_threshold, the only entry
+# this ever held, was frozen in Phase S4 -- see config.frozen.json's
+# _decisions.composite_threshold.
+PLACEHOLDER_KEYS: frozenset[str] = frozenset()
 
 VERSION_KEYS: tuple[str, ...] = (
     "strategy_version",

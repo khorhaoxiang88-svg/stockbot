@@ -76,6 +76,85 @@ describe("health page", () => {
     expect(html).toContain("composite_threshold");
   });
 
+  it("shows a config_hash that matches wholeFileConfigHash of the real file", async () => {
+    const html = await renderHealthPage(path.join(tempDir, "missing.db"));
+    const { wholeFileConfigHash } = await import("@/lib/config");
+    expect(html).toContain(wholeFileConfigHash());
+  });
+
+  it("shows the full frozen config content, matching the file exactly", async () => {
+    const html = await renderHealthPage(path.join(tempDir, "missing.db"));
+    const { loadConfig } = await import("@/lib/config");
+    const config = loadConfig();
+    // Every top-level key from the real file appears in the rendered dump,
+    // not just the six version keys the summary badges show.
+    for (const key of Object.keys(config)) {
+      expect(html).toContain(key);
+    }
+    // HTML-escaped (JSX renders quotes as &quot;), but the value itself is
+    // unambiguous: the frozen threshold appears next to its key.
+    expect(html).toMatch(/composite_threshold[^0-9]{1,20}55/);
+  });
+
+  it("shows no-lock status when the DB has no frozen_config_lock row", async () => {
+    const html = await renderHealthPage(path.join(tempDir, "missing.db"));
+    expect(html).toContain("no lock for strategy_version");
+  });
+
+  it("shows locked status when frozen_config_lock's hash matches the running config", async () => {
+    const dbPath = path.join(tempDir, "locked.db");
+    const { default: Database } = await import("better-sqlite3");
+    const { wholeFileConfigHash, loadConfig } = await import("@/lib/config");
+    const db = new Database(dbPath);
+    for (const file of fs
+      .readdirSync(path.join(REPO_ROOT, "migrations"))
+      .filter((name) => name.endsWith(".up.sql"))
+      .sort()) {
+      db.exec(fs.readFileSync(path.join(REPO_ROOT, "migrations", file), "utf-8"));
+    }
+    db.prepare(
+      "INSERT INTO calibration_reports (report_id, computed_at, score_date, config_hash, "
+      + "report_json) VALUES ('calib-test', '2026-08-06T00:00:00Z', '2026-08-03', 'x', '{}')",
+    ).run();
+    const strategyVersion = loadConfig().strategy_version;
+    db.prepare(
+      "INSERT INTO frozen_config_lock (strategy_version, selection_rule_version, config_hash, "
+      + "calibration_report_id, locked_at) VALUES (?, 2, ?, 'calib-test', '2026-08-06T00:00:00Z')",
+    ).run(strategyVersion, wholeFileConfigHash());
+    db.close();
+
+    const html = await renderHealthPage(dbPath);
+    expect(html).toContain("locked, hash matches");
+    expect(html).toContain("calib-test");
+  });
+
+  it("shows a MISMATCH badge when the locked hash differs from the running config", async () => {
+    const dbPath = path.join(tempDir, "mismatched.db");
+    const { default: Database } = await import("better-sqlite3");
+    const { loadConfig } = await import("@/lib/config");
+    const db = new Database(dbPath);
+    for (const file of fs
+      .readdirSync(path.join(REPO_ROOT, "migrations"))
+      .filter((name) => name.endsWith(".up.sql"))
+      .sort()) {
+      db.exec(fs.readFileSync(path.join(REPO_ROOT, "migrations", file), "utf-8"));
+    }
+    db.prepare(
+      "INSERT INTO calibration_reports (report_id, computed_at, score_date, config_hash, "
+      + "report_json) VALUES ('calib-stale', '2026-08-04T00:00:00Z', '2026-08-03', 'x', '{}')",
+    ).run();
+    const strategyVersion = loadConfig().strategy_version;
+    db.prepare(
+      "INSERT INTO frozen_config_lock (strategy_version, selection_rule_version, config_hash, "
+      + "calibration_report_id, locked_at) VALUES (?, 2, 'deliberately-wrong-hash', "
+      + "'calib-stale', '2026-08-04T00:00:00Z')",
+    ).run(strategyVersion);
+    db.close();
+
+    const html = await renderHealthPage(dbPath);
+    expect(html).toContain("MISMATCH");
+  });
+
   it("shows the Phase F verification report with real check results", async () => {
     const dbPath = path.join(tempDir, "verify.db");
     const { default: Database } = await import("better-sqlite3");

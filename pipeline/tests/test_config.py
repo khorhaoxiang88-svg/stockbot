@@ -45,10 +45,14 @@ def test_frozen_values_match_release_1_spec():
     assert cfg["gap_cancel_cooldown_days"] == 3
 
 
-def test_composite_threshold_is_a_declared_placeholder():
+def test_composite_threshold_is_frozen_no_placeholders_remain():
+    """Regression: composite_threshold was the sole declared placeholder
+    through Phase S. Frozen at 55 in Phase S4 (config.frozen.json's
+    _decisions.composite_threshold), governed by selection_rule_version."""
     cfg = load_config()
-    assert "composite_threshold" in PLACEHOLDER_KEYS
-    assert pending_placeholders(cfg) == ["composite_threshold"]
+    assert cfg["composite_threshold"] == 55
+    assert PLACEHOLDER_KEYS == frozenset()
+    assert pending_placeholders(cfg) == []
 
 
 def test_config_is_read_only():
