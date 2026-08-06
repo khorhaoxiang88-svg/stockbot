@@ -22,8 +22,11 @@ from selection import trading_calendar as CAL
 from selection.compute import (
     HASHED_COLUMNS,
     candidate_identity,
+    load_rows,
+    position_state,
     row_hash,
 )
+from universe import identity
 
 DB_PATH = Path(__file__).resolve().parents[2] / "data" / "stockbot.db"
 HORIZONS = [20, 60]
@@ -330,6 +333,294 @@ def test_candidate_id_is_deterministic_so_a_rerun_cannot_duplicate():
     assert first == second
     assert candidate_identity(7, "2026-07-31T20:00:00Z", 1, 1) != first
     assert candidate_identity(8, "2026-07-24T20:00:00Z", 1, 1) != first
+
+
+# ------------------------------------------------------- load_rows: population
+#
+# A security with no dilution_signals row, or no risk_flags row at all, has
+# never actually been screened. Regression coverage for the bug found while
+# auditing Phase S: load_rows used to default such a security to
+# dilution_score=0.0 / high_going_concern=False, which reads as "checked,
+# clean" -- exactly the zero-fill rule 5 forbids. It must instead be excluded
+# from `rows` and reported separately as unknown.
+
+
+@pytest.fixture
+def db(tmp_path):
+    connection = migrate.connect(tmp_path / "load_rows.db")
+    migrate.migrate_up(connection)
+    yield connection
+    connection.close()
+
+
+def seed_security(conn, symbol, cik, in_fixture=True, pool_version=None):
+    security_id = identity.create_security(
+        conn, name=f"{symbol} Inc.", cik=cik, security_type="common_stock",
+        classification_confidence="high", classification_source="test",
+        first_seen="2026-01-01T00:00:00Z", last_seen="2026-01-01T00:00:00Z",
+    )
+    identity.add_listing(
+        conn, security_id=security_id, symbol=symbol, exchange="Nasdaq", valid_from="2020-01-01"
+    )
+    if in_fixture:
+        conn.execute(
+            "INSERT INTO fixture_manifest (security_id, symbol_at_selection, inclusion_reason, "
+            "category, added_at, manifest_version) VALUES (?, ?, 'test', 'ordinary', "
+            "'2026-01-01T00:00:00Z', '1')",
+            (security_id, symbol),
+        )
+    if pool_version:
+        conn.execute(
+            "INSERT INTO universe_candidate_pool (security_id, symbol_at_discovery, exchange, "
+            "discovered_at, pool_version, discovery_source) VALUES (?, ?, 'Nasdaq', "
+            "'2026-01-01T00:00:00Z', ?, 'test')",
+            (security_id, symbol, pool_version),
+        )
+    seed_fundamentals(conn, security_id)
+    return security_id
+
+
+def seed_fundamentals(conn, security_id, model_applicable=1):
+    conn.execute(
+        "INSERT INTO derived_fundamentals (security_id, period_end, knowledge_date, "
+        "fact_set_hash, mapping_version, inputs_complete, model_applicable, computed_at) "
+        "VALUES (?, '2025-12-31', '2026-01-01T00:00:00Z', 'hash', '1', 1, ?, "
+        "'2026-01-01T00:00:00Z')",
+        (security_id, model_applicable),
+    )
+
+
+def seed_score(conn, security_id, score_date="2026-08-03", rank=1,
+               cohort_id="SIC-D", rankable=1):
+    # value=quality=momentum=100, insider=0, dilution_penalty=0 -> composite=90.0
+    # exactly, satisfying the DB CHECK that ties composite_score to the formula.
+    conn.execute(
+        'INSERT INTO scores (security_id, score_date, strategy_version, config_hash, '
+        'mapping_version, value_score, quality_score, momentum_score, insider_bonus, '
+        'composite_score, "rank", cohort_id, rankable, explanation_json) '
+        "VALUES (?, ?, 1, 'h', '1', 100.0, 100.0, 100.0, 0.0, 90.0, ?, ?, ?, '{}')",
+        (security_id, score_date, rank, cohort_id, rankable),
+    )
+
+
+def seed_dilution(conn, security_id, as_of="2026-08-03", score=0.0, disqualified=0):
+    conn.execute(
+        "INSERT INTO dilution_signals (security_id, as_of_date, d1_capacity, d2_issuance, "
+        "d3_structural, d4_realised, dilution_score, is_disqualified) "
+        "VALUES (?, ?, 0, 0, 0, 0, ?, ?)",
+        (security_id, as_of, score, disqualified),
+    )
+
+
+def seed_risk_flag(conn, security_id, as_of="2026-08-03", flag_code="going_concern",
+                    severity="none"):
+    is_unknown = 1 if severity == "unknown" else 0
+    conn.execute(
+        "INSERT INTO risk_flags (security_id, as_of_date, flag_code, severity, "
+        "evidence_text, source_accession, is_unknown) VALUES (?, ?, ?, ?, 'test', ?, ?)",
+        (security_id, as_of, flag_code, severity,
+         None if is_unknown else "acc-test", is_unknown),
+    )
+
+
+def load(conn, pool_versions=None):
+    return load_rows(conn, "2026-08-03", "2026-08-03T23:59:59Z", [], {}, pool_versions)
+
+
+def test_fully_screened_security_is_included(db):
+    sid = seed_security(db, "AAAA", "0000000001")
+    seed_score(db, sid)
+    seed_dilution(db, sid)
+    seed_risk_flag(db, sid)
+
+    rows, _faults, _scores, unknown = load(db)
+
+    assert [r.security_id for r in rows] == [sid]
+    assert unknown == []
+
+
+def test_missing_dilution_signals_excludes_and_reports_unknown(db):
+    sid = seed_security(db, "AAAA", "0000000001")
+    seed_score(db, sid)
+    seed_risk_flag(db, sid)
+    # No seed_dilution call: dilution/compute.py never ran for this security.
+
+    rows, _faults, _scores, unknown = load(db)
+
+    assert rows == []
+    assert len(unknown) == 1
+    assert unknown[0]["security_id"] == sid
+    assert unknown[0]["missing"] == ["dilution_signals"]
+
+
+def test_missing_risk_flags_entirely_excludes_and_reports_unknown(db):
+    sid = seed_security(db, "AAAA", "0000000001")
+    seed_score(db, sid)
+    seed_dilution(db, sid)
+    # No seed_risk_flag call: riskflags/compute.py never ran for this security.
+
+    rows, _faults, _scores, unknown = load(db)
+
+    assert rows == []
+    assert len(unknown) == 1
+    assert unknown[0]["missing"] == ["risk_flags"]
+
+
+def test_missing_both_reports_both_in_the_missing_list(db):
+    sid = seed_security(db, "AAAA", "0000000001")
+    seed_score(db, sid)
+
+    rows, _faults, _scores, unknown = load(db)
+
+    assert rows == []
+    assert unknown[0]["missing"] == ["dilution_signals", "risk_flags"]
+
+
+def test_risk_flags_present_but_none_high_severity_is_still_included(db):
+    """Having been checked and found clean is NOT the same as never having
+    been checked. A security with only non-high severities on file must not
+    be excluded -- risk_flags rows exist, they are just not severity=high."""
+    sid = seed_security(db, "AAAA", "0000000001")
+    seed_score(db, sid)
+    seed_dilution(db, sid)
+    seed_risk_flag(db, sid, flag_code="going_concern", severity="none")
+    seed_risk_flag(db, sid, flag_code="altman_distress", severity="unknown")
+
+    rows, _faults, _scores, unknown = load(db)
+
+    assert [r.security_id for r in rows] == [sid]
+    assert unknown == []
+    assert rows[0].high_going_concern is False
+
+
+def test_default_population_is_fixture_only(db):
+    fixture_sid = seed_security(db, "AAAA", "0000000001", in_fixture=True)
+    pool_sid = seed_security(db, "BBBB", "0000000002", in_fixture=False, pool_version="s1-sample-v1")
+    for sid in (fixture_sid, pool_sid):
+        seed_score(db, sid)
+        seed_dilution(db, sid)
+        seed_risk_flag(db, sid)
+
+    rows, _faults, _scores, _unknown = load(db)
+
+    assert {r.security_id for r in rows} == {fixture_sid}
+
+
+def test_pool_versions_pulls_pool_only_securities(db):
+    fixture_sid = seed_security(db, "AAAA", "0000000001", in_fixture=True)
+    pool_sid = seed_security(db, "BBBB", "0000000002", in_fixture=False, pool_version="s1-sample-v1")
+    for sid in (fixture_sid, pool_sid):
+        seed_score(db, sid)
+        seed_dilution(db, sid)
+        seed_risk_flag(db, sid)
+
+    rows, _faults, _scores, _unknown = load(db, pool_versions=["s1-sample-v1"])
+
+    assert {r.security_id for r in rows} == {pool_sid}
+
+
+# --------------------------------------------------------------- position_state
+#
+# Regression: migration 013 dropped `positions` (its own comment says
+# "pipeline/selection reads paper_positions" from then on), but position_state()
+# was never updated to match -- every real selection run since would have
+# raised `OperationalError: no such table: positions` the moment it actually
+# executed. Found while verifying the --pool addition could run end to end.
+
+
+def _seed_run_and_snapshot(conn):
+    conn.execute(
+        "INSERT INTO pipeline_runs (run_id, stage, started_at, status, code_version) "
+        "VALUES ('run-seed', 'test', 'x', 'success', 'x')"
+    )
+    conn.execute(
+        "INSERT INTO universe_snapshot_runs (snapshot_id, effective_at, rules_version, "
+        "config_hash, run_id, security_count, is_official) VALUES "
+        "('snap-1', '2026-01-01', 'v', 'h', NULL, 1, 1)"
+    )
+    conn.execute(
+        "INSERT INTO books (book_id, horizon_days, starting_nav, current_nav, "
+        "open_position_count, strategy_version) VALUES "
+        "('book-20d', 20, 100000, 100000, 0, 1), ('book-60d', 60, 100000, 100000, 0, 1)"
+    )
+
+
+def _seed_candidate(conn, candidate_id, security_id, cutoff_session="2026-07-24"):
+    conn.execute(
+        "INSERT INTO research_candidates (candidate_id, security_id, generated_at, "
+        "data_cutoff_at, snapshot_id, pipeline_run_id, strategy_version, config_hash, "
+        "code_version, selection_rule_version, mapping_version, price_dataset_version, "
+        "price_snapshot_hash, source_health_snapshot_json, score_snapshot_json, "
+        "accessions_used_json, composite_at_generation, rank_at_generation, "
+        "signal_close, atr_value, atr_window, price_data_cutoff, entry_rule, "
+        "gap_limit_atr, row_hash) VALUES (?, ?, 'x', ?, 'snap-1', 'run-seed', 1, 'h', "
+        "'v', 1, '1', 1, 'psh', '{}', '{}', '[]', 55.0, 1, 100.0, 3.0, 14, ?, "
+        "'next_open', 1.0, 'rh')",
+        (candidate_id, security_id, f"{cutoff_session}T20:00:00Z", cutoff_session),
+    )
+
+
+def _seed_paper_position(conn, position_id, candidate_id, horizon_days, status,
+                          exit_date=None, exit_price=None, exit_reason=None):
+    net_pnl = None if status != "closed" else (exit_price - 100.0) * 10
+    conn.execute(
+        "INSERT INTO paper_positions (position_id, candidate_id, horizon_days, book_id, "
+        "protocol_version, strategy_version, resolution_policy_version, "
+        "accrual_policy_version, price_snapshot_hash, opened_run_id, last_evaluated_at, "
+        "entry_date, entry_price, slippage_bps, shares, notional, stop_price, "
+        "target_price, status, exit_date, exit_price, exit_reason, gross_pnl, net_pnl, "
+        "pnl_pct) VALUES "
+        "(?, ?, ?, ?, 'v1', 1, 1, 1, 'h', 'run-seed', 'x', '2026-07-01', 100.0, 5, 10, "
+        "1000, 90.0, 110.0, ?, ?, ?, ?, ?, ?, ?)",
+        (position_id, candidate_id, horizon_days, f"book-{horizon_days}d", status,
+         exit_date, exit_price, exit_reason, net_pnl, net_pnl, net_pnl),
+    )
+
+
+def test_position_state_reads_open_positions_from_paper_positions(db):
+    sid = seed_security(db, "AAAA", "0000000001")
+    _seed_run_and_snapshot(db)
+    _seed_candidate(db, "cand-1", sid)
+    _seed_paper_position(db, "pos-1", "cand-1", 20, "open")
+
+    exits, gaps, open_horizons = position_state(db, "2026-08-03")
+    assert open_horizons == {sid: {20}}
+    assert exits == {}
+    assert gaps == {}
+
+
+def test_position_state_reads_the_most_recent_exit(db):
+    sid = seed_security(db, "AAAA", "0000000001")
+    _seed_run_and_snapshot(db)
+    _seed_candidate(db, "cand-1", sid)
+    _seed_candidate(db, "cand-2", sid, cutoff_session="2026-07-10")
+    _seed_paper_position(db, "pos-1", "cand-1", 20, "closed",
+                          exit_date="2026-07-20", exit_price=95.0, exit_reason="stop")
+    _seed_paper_position(db, "pos-2", "cand-2", 60, "closed",
+                          exit_date="2026-06-01", exit_price=105.0, exit_reason="target")
+
+    exits, gaps, open_horizons = position_state(db, "2026-08-03")
+    assert exits == {sid: "2026-07-20"}
+    assert open_horizons == {}
+
+
+def test_position_state_reads_gap_cancellations_from_cancelled_entries(db):
+    """cancelled_entries has no 'gap_cancelled' status on paper_positions to
+    read -- a cancelled entry never became a position at all."""
+    sid = seed_security(db, "AAAA", "0000000001")
+    _seed_run_and_snapshot(db)
+    _seed_candidate(db, "cand-1", sid)
+    db.execute(
+        "INSERT INTO cancelled_entries (candidate_id, reason, signal_close, next_open, "
+        "gap_atr, adjusted_basis, cancelled_at, run_id) VALUES "
+        "('cand-1', 'gap_above_prior_close', 100.0, 115.0, 2.0, 'raw close, no split', "
+        "'2026-07-23T13:30:00Z', 'run-seed')"
+    )
+
+    exits, gaps, open_horizons = position_state(db, "2026-08-03")
+    assert gaps == {sid: "2026-07-23"}
+    assert exits == {}
+    assert open_horizons == {}
 
 
 # ------------------------------------------------------ against the database

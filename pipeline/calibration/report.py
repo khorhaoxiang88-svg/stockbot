@@ -44,16 +44,32 @@ def latest_score_date(conn) -> str | None:
     return row["d"] if row and row["d"] else None
 
 
-def load_rows(conn, score_date: str) -> list[R.Row]:
+def load_rows(conn, score_date: str) -> tuple[list[R.Row], list[dict]]:
     """Every scored security as the selection rule sees it, for whichever
     population (fixture or pool) was scored on this date. No fixture_manifest
-    dependency: `scores` already carries every security actually scored."""
+    dependency: `scores` already carries every security actually scored.
+
+    A security with no dilution_signals row, or no risk_flags row at all, has
+    never actually been screened -- dilution/compute.py and riskflags/compute.py
+    have historically only ever run against the Phase F fixture. Defaulting an
+    unscreened security to dilution_score=0.0 and high_going_concern=False would
+    read as "checked, clean", which is false: it was never checked. That is
+    exactly the zero-fill this codebase's own rule 5 forbids everywhere else, so
+    such a security is excluded from the sweep and reported separately as
+    unknown, never folded into `rows` as if it were clean.
+    """
     scores = {
         int(r["security_id"]): dict(r)
         for r in conn.execute(
             'SELECT security_id, composite_score, "rank", quality_score, rankable, '
             "cohort_id FROM scores WHERE score_date = ?",
             (score_date,),
+        )
+    }
+    risk_flag_ids = {
+        int(r["security_id"])
+        for r in conn.execute(
+            "SELECT DISTINCT security_id FROM risk_flags WHERE as_of_date = ?", (score_date,),
         )
     }
     flags: dict[int, set[str]] = {}
@@ -82,9 +98,26 @@ def load_rows(conn, score_date: str) -> list[R.Row]:
     }
 
     rows: list[R.Row] = []
+    excluded_unknown: list[dict] = []
     for security_id, score in scores.items():
-        high = flags.get(security_id, set())
         dil = dilution.get(security_id)
+        has_risk_flags = security_id in risk_flag_ids
+        if dil is None or not has_risk_flags:
+            missing = [
+                name for name, present in (
+                    ("dilution_signals", dil is not None),
+                    ("risk_flags", has_risk_flags),
+                ) if not present
+            ]
+            excluded_unknown.append({
+                "security_id": security_id,
+                "symbol": listings.get(security_id) or str(security_id),
+                "composite": score.get("composite_score"),
+                "rank": score.get("rank"),
+                "missing": missing,
+            })
+            continue
+        high = flags.get(security_id, set())
         rows.append(R.Row(
             security_id=security_id,
             symbol=listings.get(security_id) or str(security_id),
@@ -97,8 +130,8 @@ def load_rows(conn, score_date: str) -> list[R.Row]:
             # Only used for tie-break ordering in sort_key, never for
             # eligibility, so a rankable proxy is sufficient here.
             inputs_complete=1 if score.get("rankable") else 0,
-            dilution_score=float(dil["dilution_score"]) if dil else 0.0,
-            dilution_disqualified=bool(dil and int(dil["is_disqualified"]) == 1),
+            dilution_score=float(dil["dilution_score"]),
+            dilution_disqualified=bool(int(dil["is_disqualified"]) == 1),
             high_going_concern="going_concern" in high,
             high_dilution_flags=tuple(sorted(high & set(R.DILUTION_DISQUALIFY_FLAGS))),
             # No execution history for S1/S2 pool securities yet, so cooldowns
@@ -107,7 +140,7 @@ def load_rows(conn, score_date: str) -> list[R.Row]:
             last_gap_cancel_session=None,
             open_horizons=(),
         ))
-    return rows
+    return rows, excluded_unknown
 
 
 def histogram(values: list[float], bucket_size: float, lo: float = 0, hi: float = 100) -> list[dict]:
@@ -216,11 +249,23 @@ def cohort_and_metric_coverage(conn, score_date: str) -> dict:
     }
 
 
-def simulate_candidate_rate(rows: list[R.Row], cfg: dict) -> list[dict]:
+def simulate_candidate_rate(
+    rows: list[R.Row], cfg: dict, excluded_unknown: list[dict] | None = None
+) -> list[dict]:
     """select() applied hypothetically at each threshold -- the SAME rule
     F10 runs for real, with cooldowns/book-capacity naturally inert (no
     execution history exists for these securities yet). No return data enters
-    this function or anything it calls."""
+    this function or anything it calls.
+
+    `excluded_unknown` never entered `rows` (see load_rows): they carry no
+    dilution or risk-flag data on file, so eligibility cannot be honestly
+    evaluated at any threshold. They are logged as suppressed at every
+    threshold for the same reason a stale-source failure suppresses a real
+    weekly run's whole universe, so "suppressed" here means the same thing it
+    means in selection/compute.py -- not silently dropped, and not folded into
+    `candidates_per_week` as if they were screened.
+    """
+    excluded_unknown = excluded_unknown or []
     horizons = cfg["horizons"]
     book_capacity = {h: cfg["max_open_positions_per_horizon"] for h in horizons}
     results = []
@@ -235,6 +280,13 @@ def simulate_candidate_rate(rows: list[R.Row], cfg: dict) -> list[dict]:
             gap_cooldown_days=int(cfg["gap_cancel_cooldown_days"]),
             book_capacity=book_capacity,
         )
+        for item in excluded_unknown:
+            for horizon in horizons:
+                outcome.suppressions.append(R.Suppression(
+                    item["security_id"], horizon, item["composite"], item["rank"],
+                    "dilution_or_riskflags_unknown",
+                    "no " + " or ".join(item["missing"]) + " row on file at this cutoff",
+                ))
         n = len(outcome.selected)
         cohort_dist: dict[str, int] = {}
         for row in outcome.selected:
@@ -257,6 +309,7 @@ def simulate_candidate_rate(rows: list[R.Row], cfg: dict) -> list[dict]:
             "threshold": threshold,
             "candidates_per_week": n,
             "suppressed": len(outcome.suppressions),
+            "excluded_unknown_dilution_or_risk": len(excluded_unknown),
             "cohort_distribution": cohort_dist,
             "estimated_weeks_to_100_closed": weeks_per_horizon,
         })
@@ -268,7 +321,7 @@ def build_report(conn, cfg: dict) -> dict:
     if score_date is None:
         return {"score_date": None, "empty": True}
 
-    rows = load_rows(conn, score_date)
+    rows, excluded_unknown = load_rows(conn, score_date)
     return {
         "score_date": score_date,
         "empty": False,
@@ -279,7 +332,8 @@ def build_report(conn, cfg: dict) -> dict:
         "submetric_distributions": submetric_distributions(conn, score_date),
         "rankable_vs_withheld": rankable_vs_withheld(conn, score_date),
         "cohort_and_metric_coverage": cohort_and_metric_coverage(conn, score_date),
-        "candidate_rate_simulation": simulate_candidate_rate(rows, cfg),
+        "excluded_unknown_dilution_or_risk": len(excluded_unknown),
+        "candidate_rate_simulation": simulate_candidate_rate(rows, cfg, excluded_unknown),
     }
 
 

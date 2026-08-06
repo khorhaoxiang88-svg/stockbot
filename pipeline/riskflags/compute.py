@@ -1,4 +1,4 @@
-"""Compute the risk flags for the fixture.
+"""Compute the risk flags for the fixture (default) or a named universe pool.
 
 Everything except going concern is resolved from data already in the database.
 Going concern reads the actual filing text, because the phrase it looks for is
@@ -518,6 +518,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--symbols", nargs="*")
     parser.add_argument("--no-network", action="store_true",
                         help="skip going-concern document fetching; it becomes an unknown")
+    parser.add_argument(
+        "--pool", default=None,
+        help="score a universe_candidate_pool version instead of the Phase F fixture "
+        "(e.g. s1-sample-v1); does not touch fixture_manifest",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config(Path(args.config))
@@ -541,7 +546,12 @@ def main(argv: list[str] | None = None) -> int:
             (run_id, utc_now(), CODE_VERSION),
         )
 
-        securities = fixture_securities(conn)
+        if args.pool:
+            from universe.pool import pool_securities
+
+            securities = pool_securities(conn, args.pool)
+        else:
+            securities = fixture_securities(conn)
         if args.symbols:
             wanted = {s.upper() for s in args.symbols}
             securities = [s for s in securities if (s["symbol"] or "").upper() in wanted]

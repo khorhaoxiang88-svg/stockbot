@@ -1,4 +1,6 @@
-"""Weekly research-candidate selection.
+"""Weekly research-candidate selection, over the Phase F fixture (default) or a
+named universe pool (--pool, repeatable; NOT official, matching every other
+Phase S pool-scoped output).
 
 Fully automatic. There is no flag, argument or code path that lets a human add,
 remove or reorder a candidate, and the append-only triggers plus row_hash make a
@@ -39,7 +41,7 @@ if str(PIPELINE_DIR) not in sys.path:
 import migrate  # noqa: E402
 from config_loader import DEFAULT_CONFIG_PATH, load_config  # noqa: E402
 from prices.adjust import adjusted_series  # noqa: E402
-from scoring.compute import config_hash  # noqa: E402
+from scoring.compute import config_hash, universe_rows  # noqa: E402
 from sec.payload_store import utc_now  # noqa: E402
 from selection import trading_calendar as CAL  # noqa: E402
 from selection import freshness as FR  # noqa: E402
@@ -110,9 +112,23 @@ def atr(bars, window: int) -> float | None:
 # ------------------------------------------------------------------ gathering
 
 
-def load_rows(conn, cutoff_session: str, cutoff_utc: str, session_dates: list[str],
-              cfg) -> tuple[list[R.Row], list[dict]]:
-    """Every fixture security as the rule sees it, plus evidence-cutoff faults."""
+def load_rows(
+    conn, cutoff_session: str, cutoff_utc: str, session_dates: list[str], cfg,
+    pool_versions: list[str] | None = None,
+) -> tuple[list[R.Row], list[dict], dict, list[dict]]:
+    """Every security in the named population (the Phase F fixture by default,
+    or the given universe pool version(s)) as the rule sees it, plus
+    evidence-cutoff faults.
+
+    A security with no dilution_signals row, or no risk_flags row at all as of
+    this cutoff, has never actually been screened by dilution/compute.py or
+    riskflags/compute.py. Defaulting it to dilution_score=0.0 and
+    high_going_concern=False would read as "checked, clean", which is false --
+    exactly the zero-fill rule 5 forbids everywhere else in this system. Such a
+    security is excluded from `rows` and returned separately in the fourth
+    element, so the caller logs it as suppressed (unknown) rather than
+    silently treating it as eligible.
+    """
     scores = {
         int(r["security_id"]): dict(r)
         for r in conn.execute(
@@ -157,16 +173,30 @@ def load_rows(conn, cutoff_session: str, cutoff_utc: str, session_dates: list[st
 
     rows: list[R.Row] = []
     faults: list[dict] = []
-    for security in conn.execute(
-        "SELECT s.security_id, s.cik, MIN(f.symbol_at_selection) AS symbol "
-        "FROM fixture_manifest f JOIN securities s USING (security_id) "
-        "GROUP BY s.security_id ORDER BY s.security_id"
-    ):
+    unknown_risk_data: list[dict] = []
+    for security in universe_rows(conn, pool_versions):
         security_id = int(security["security_id"])
         score = scores.get(security_id)
         my_flags = flags.get(security_id, [])
         dil = dilution.get(security_id)
+        has_risk_flags = security_id in flags
         model_applicable, inputs_complete = applicable.get(security_id, (0, 0))
+
+        if dil is None or not has_risk_flags:
+            missing = [
+                name for name, present in (
+                    ("dilution_signals", dil is not None),
+                    ("risk_flags", has_risk_flags),
+                ) if not present
+            ]
+            unknown_risk_data.append({
+                "security_id": security_id,
+                "symbol": security["symbol"] or str(security_id),
+                "composite": (score or {}).get("composite_score"),
+                "rank": (score or {}).get("rank"),
+                "missing": missing,
+            })
+            continue
 
         high = {f["flag_code"] for f in my_flags if f["severity"] == "high"}
         rows.append(R.Row(
@@ -179,34 +209,59 @@ def load_rows(conn, cutoff_session: str, cutoff_utc: str, session_dates: list[st
             rank=(score or {}).get("rank"),
             quality=(score or {}).get("quality_score"),
             inputs_complete=inputs_complete,
-            dilution_score=float(dil["dilution_score"]) if dil else 0.0,
-            dilution_disqualified=bool(dil and int(dil["is_disqualified"]) == 1),
+            dilution_score=float(dil["dilution_score"]),
+            dilution_disqualified=bool(int(dil["is_disqualified"]) == 1),
             high_going_concern="going_concern" in high,
             high_dilution_flags=tuple(sorted(high & set(R.DILUTION_DISQUALIFY_FLAGS))),
             last_exit_session=exits.get(security_id),
             last_gap_cancel_session=gaps.get(security_id),
             open_horizons=tuple(sorted(open_horizons.get(security_id, ()))),
         ))
-    return rows, faults, scores
+    return rows, faults, scores, unknown_risk_data
 
 
 def position_state(conn, cutoff_session: str):
-    """Most recent exit, most recent gap cancellation, and open horizons."""
+    """Most recent exit, most recent gap cancellation, and open horizons.
+
+    Reads paper_positions and cancelled_entries, not `positions` -- migration
+    013 dropped `positions` (F11's own comment: "pipeline/selection reads
+    paper_positions"), but this function was never updated to match, which
+    meant every selection run from that point on would raise
+    `OperationalError: no such table: positions` the moment it actually
+    executed. paper_positions carries no security_id of its own, only
+    candidate_id, so it is joined through research_candidates. A gap
+    cancellation never became a position at all, so it lives in its own
+    candidate-keyed cancelled_entries table instead of a paper_positions
+    status -- there is no 'gap_cancelled' status; the CHECK constraint only
+    allows open/closed/pending_resolution.
+    """
     exits: dict[int, str] = {}
     gaps: dict[int, str] = {}
     open_horizons: dict[int, set] = {}
     for row in conn.execute(
-        "SELECT security_id, horizon_days, status, closed_on FROM positions"
+        "SELECT rc.security_id AS security_id, pp.horizon_days, pp.status, pp.exit_date "
+        "FROM paper_positions pp JOIN research_candidates rc ON rc.candidate_id = pp.candidate_id"
     ):
         security_id = int(row["security_id"])
         if row["status"] == "open":
             open_horizons.setdefault(security_id, set()).add(int(row["horizon_days"]))
-        elif row["status"] == "closed" and row["closed_on"] and row["closed_on"] <= cutoff_session:
-            if exits.get(security_id) is None or row["closed_on"] > exits[security_id]:
-                exits[security_id] = row["closed_on"]
-        elif row["status"] == "gap_cancelled" and row["closed_on"] and row["closed_on"] <= cutoff_session:
-            if gaps.get(security_id) is None or row["closed_on"] > gaps[security_id]:
-                gaps[security_id] = row["closed_on"]
+        elif row["status"] == "closed" and row["exit_date"] and row["exit_date"] <= cutoff_session:
+            if exits.get(security_id) is None or row["exit_date"] > exits[security_id]:
+                exits[security_id] = row["exit_date"]
+
+    for row in conn.execute(
+        "SELECT rc.security_id AS security_id, ce.cancelled_at "
+        "FROM cancelled_entries ce JOIN research_candidates rc ON rc.candidate_id = ce.candidate_id"
+    ):
+        security_id = int(row["security_id"])
+        # cancelled_at is a UTC timestamp; a cancellation is decided at the next
+        # regular session's open, which falls on the same UTC calendar date as
+        # that session for every US market hour, so truncating to the date is
+        # the trading-date equivalent closed_on/exit_date already store.
+        cancelled_date = str(row["cancelled_at"])[:10]
+        if cancelled_date <= cutoff_session:
+            if gaps.get(security_id) is None or cancelled_date > gaps[security_id]:
+                gaps[security_id] = cancelled_date
     return exits, gaps, open_horizons
 
 
@@ -308,7 +363,9 @@ def run_selection(conn, cfg, args) -> dict:
         for h in horizons if h in books
     }
 
-    rows, _faults, scores = load_rows(conn, cutoff_session, cutoff_utc, session_dates, cfg)
+    rows, _faults, scores, unknown_risk_data = load_rows(
+        conn, cutoff_session, cutoff_utc, session_dates, cfg, args.pool
+    )
 
     threshold = cfg.get("composite_threshold")
     if threshold is None and args.provisional_threshold is not None:
@@ -334,6 +391,21 @@ def run_selection(conn, cfg, args) -> dict:
             gap_cooldown_days=int(cfg["gap_cancel_cooldown_days"]),
             book_capacity=dict(capacity),
         )
+
+    # Securities with no dilution_signals or risk_flags row on file: eligibility
+    # cannot be honestly evaluated, so they are logged as suppressed (unknown)
+    # rather than folded into `rows` as if they were screened clean. Logged
+    # unconditionally, independent of the freshness branch above -- missing
+    # screening data is a fact about the security, not about pipeline staleness.
+    for item in unknown_risk_data:
+        for horizon in horizons:
+            result.suppressions.append(R.Suppression(
+                item["security_id"], horizon, item["composite"], item["rank"],
+                "dilution_or_riskflags_unknown",
+                "no " + " or ".join(item["missing"]) + " row on file at this cutoff; "
+                "eligibility cannot be honestly evaluated, so this security is excluded "
+                "rather than assumed clean",
+            ))
 
     health_snapshot = json.dumps({
         "checked_at_cutoff": cutoff_utc,
@@ -384,7 +456,11 @@ def run_selection(conn, cfg, args) -> dict:
             "pipeline_run_id": run_id,
             "strategy_version": int(cfg["strategy_version"]),
             "config_hash": cfg_hash,
-            "code_version": CODE_VERSION + ("+provisional" if cfg.get("composite_threshold") is None else ""),
+            "code_version": (
+                CODE_VERSION
+                + ("+provisional" if cfg.get("composite_threshold") is None else "")
+                + (f"+pool[{','.join(sorted(args.pool))}]" if args.pool else "")
+            ),
             "selection_rule_version": int(cfg["selection_rule_version"]),
             "mapping_version": str(score.get("mapping_version") or cfg["mapping_version"]),
             "price_dataset_version": score.get("price_dataset_version"),
@@ -546,6 +622,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--verify", action="store_true",
                         help="recompute every stored row_hash and report tampering")
+    parser.add_argument(
+        "--pool", action="append", default=None,
+        help="select over a universe_candidate_pool version instead of the Phase F "
+        "fixture; repeatable to combine pools. Candidates from a pool-scoped run are "
+        "stamped code_version '+pool[...]' and are NOT official, matching every other "
+        "Phase S pool-scoped output",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config(Path(args.config))

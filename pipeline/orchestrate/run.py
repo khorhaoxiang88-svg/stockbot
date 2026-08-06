@@ -22,6 +22,7 @@ import sys
 import time
 import uuid
 from collections import Counter
+from datetime import date
 from pathlib import Path
 
 PIPELINE_DIR = Path(__file__).resolve().parent.parent
@@ -30,6 +31,10 @@ if str(PIPELINE_DIR) not in sys.path:
 
 import migrate  # noqa: E402
 from config_loader import load_config  # noqa: E402
+from dilution.compute import (  # noqa: E402
+    compute_security as dilution_compute_security,
+    fixture_securities as dilution_fixture_securities,
+)
 from fundamentals.compute import (  # noqa: E402
     CONCEPT_MAP,
     compute_for_security,
@@ -47,6 +52,10 @@ from orchestrate.progress import batch_summary, mark_item, pending_items, utc_no
 from prices.ingest import fixture_securities as prices_fixture_securities  # noqa: E402
 from prices.ingest import ingest_securities  # noqa: E402
 from prices.registry import get_provider  # noqa: E402
+from riskflags.compute import (  # noqa: E402
+    compute_security as riskflags_compute_security,
+    fixture_securities as riskflags_fixture_securities,
+)
 from sec.ingest_facts import FactsReport, fixture_ciks, ingest_company  # noqa: E402
 from universe import membership as M  # noqa: E402
 from universe.pool import pool_securities  # noqa: E402
@@ -58,7 +67,11 @@ from universe.sec_client import SecClient, load_dotenv_into_environ  # noqa: E40
 # what enforces it automatically instead of relying on someone noticing.
 MAX_CONSECUTIVE_FAILURES = 5
 
-TIERS = ("prices", "form4", "xbrl", "universe")
+# dilution and riskflags added when auditing Phase S found neither had ever
+# run against the pool: two more per-security, per-item stages with exactly
+# the shape this module already exists to scale (see run_dilution_tier /
+# run_riskflags_tier below).
+TIERS = ("prices", "form4", "xbrl", "universe", "dilution", "riskflags")
 
 
 def default_batch_id(tier: str) -> str:
@@ -106,6 +119,10 @@ def _security_list(conn, tier_name: str, pool_version: str | None, limit: int | 
         result = [
             (r["security_id"], r["cik"], r["symbol"]) for r in fundamentals_fixture_securities(conn)
         ]
+    elif tier_name == "dilution":
+        result = [(r["security_id"], r["cik"], r["symbol"]) for r in dilution_fixture_securities(conn)]
+    elif tier_name == "riskflags":
+        result = [(r["security_id"], r["cik"], r["symbol"]) for r in riskflags_fixture_securities(conn)]
     else:
         raise ValueError(tier_name)
     if limit:
@@ -248,6 +265,99 @@ def run_xbrl_tier(conn, batch_id: str, pool_version: str | None, limit: int | No
     return {"run_id": run_id, "summary": summary, "errors": errors, "facts_report": report}
 
 
+def run_dilution_tier(conn, batch_id: str, pool_version: str | None, as_of: str, limit: int | None):
+    run_id = _start_run(conn, "orchestrate_dilution")
+    load_dotenv_into_environ()
+    sec = SecClient()
+    securities = _security_list(conn, "dilution", pool_version, limit)
+    keys = [sym for _, _, sym in securities]
+    by_key = {sym: {"security_id": sid, "cik": cik, "symbol": sym} for sid, cik, sym in securities}
+    todo = pending_items(conn, batch_id, "dilution", keys)
+
+    written = 0
+    errors: list[str] = []
+    consecutive_failures = 0
+    for key in todo:
+        security = by_key[key]
+        conn.execute("BEGIN")
+        try:
+            row = dilution_compute_security(conn, sec, security, as_of)
+            columns = ",".join(row)
+            conn.execute(
+                f"INSERT OR REPLACE INTO dilution_signals ({columns}) "
+                f"VALUES ({','.join('?' * len(row))})",
+                list(row.values()),
+            )
+            mark_item(conn, batch_id, "dilution", key, "success", run_id)
+            conn.execute("COMMIT")
+            written += 1
+            consecutive_failures = 0
+        except Exception as exc:  # noqa: BLE001
+            conn.execute("ROLLBACK")
+            conn.execute("BEGIN")
+            mark_item(conn, batch_id, "dilution", key, "failed", run_id, str(exc))
+            conn.execute("COMMIT")
+            errors.append(f"{key}: {exc}")
+            consecutive_failures += 1
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                errors.append(f"aborting: {consecutive_failures} consecutive failures")
+                break
+
+    summary = batch_summary(conn, batch_id, "dilution")
+    status = "success" if not summary["failed"] else ("partial" if summary["success"] else "failed")
+    _finish_run(conn, run_id, status, written, errors)
+    return {"run_id": run_id, "summary": summary, "errors": errors}
+
+
+def run_riskflags_tier(conn, batch_id: str, pool_version: str | None, as_of: str, cfg,
+                        limit: int | None):
+    run_id = _start_run(conn, "orchestrate_riskflags")
+    load_dotenv_into_environ()
+    sec = SecClient()
+    cutoff = f"{as_of}T23:59:59Z"
+    securities = _security_list(conn, "riskflags", pool_version, limit)
+    keys = [sym for _, _, sym in securities]
+    by_key = {sym: {"security_id": sid, "cik": cik, "symbol": sym} for sid, cik, sym in securities}
+    todo = pending_items(conn, batch_id, "riskflags", keys)
+
+    written = 0
+    errors: list[str] = []
+    consecutive_failures = 0
+    for key in todo:
+        security = by_key[key]
+        conn.execute("BEGIN")
+        try:
+            rows = riskflags_compute_security(conn, sec, security, as_of, cutoff, cfg, False)
+            for row in rows:
+                conn.execute(
+                    "INSERT OR REPLACE INTO risk_flags (security_id, as_of_date, "
+                    "flag_code, severity, evidence_text, source_accession, is_unknown) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (row["security_id"], row["as_of_date"], row["flag_code"],
+                     row["severity"], row["evidence_text"], row["source_accession"],
+                     row["is_unknown"]),
+                )
+            mark_item(conn, batch_id, "riskflags", key, "success", run_id)
+            conn.execute("COMMIT")
+            written += len(rows)
+            consecutive_failures = 0
+        except Exception as exc:  # noqa: BLE001
+            conn.execute("ROLLBACK")
+            conn.execute("BEGIN")
+            mark_item(conn, batch_id, "riskflags", key, "failed", run_id, str(exc))
+            conn.execute("COMMIT")
+            errors.append(f"{key}: {exc}")
+            consecutive_failures += 1
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                errors.append(f"aborting: {consecutive_failures} consecutive failures")
+                break
+
+    summary = batch_summary(conn, batch_id, "riskflags")
+    status = "success" if not summary["failed"] else ("partial" if summary["success"] else "failed")
+    _finish_run(conn, run_id, status, written, errors)
+    return {"run_id": run_id, "summary": summary, "errors": errors}
+
+
 def run_universe_tier(conn, batch_id: str, pool_version: str | None, run_type: str):
     """One holistic computation, not a per-security loop -- treated as a
     single item ('snapshot') for progress purposes."""
@@ -292,9 +402,13 @@ def main(argv: list[str] | None = None) -> int:
         "--run-type", default="monthly_membership",
         choices=("monthly_membership", "daily_safety"), help="universe tier only",
     )
+    parser.add_argument(
+        "--as-of", default=date.today().isoformat(),
+        help="dilution and riskflags tiers only",
+    )
     args = parser.parse_args(argv)
 
-    load_config()  # fails loudly on a bad config before any network call
+    cfg = load_config()  # fails loudly on a bad config before any network call
     conn = migrate.connect(Path(args.db))
 
     tiers = TIERS if args.tier == "all" else (args.tier,)
@@ -312,6 +426,12 @@ def main(argv: list[str] | None = None) -> int:
                 results[tier] = run_xbrl_tier(conn, batch_id, args.pool, args.limit)
             elif tier == "universe":
                 results[tier] = run_universe_tier(conn, batch_id, args.pool, args.run_type)
+            elif tier == "dilution":
+                results[tier] = run_dilution_tier(conn, batch_id, args.pool, args.as_of, args.limit)
+            elif tier == "riskflags":
+                results[tier] = run_riskflags_tier(
+                    conn, batch_id, args.pool, args.as_of, cfg, args.limit
+                )
             print(f"  summary: {results[tier]['summary']}")
             if results[tier]["errors"]:
                 print(f"  errors ({len(results[tier]['errors'])}):")

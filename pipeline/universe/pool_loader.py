@@ -23,6 +23,11 @@ Discovery path:
   6. Deterministic stride sample down to the target pool size, sorted by
      symbol first so the sample spans the alphabet (and therefore a spread of
      market caps and sectors) rather than clustering.
+
+At load time, load_pool() also resolves each new (or still-unresolved) security's
+sic_code from SEC submissions -- the same call load_fixture.py already makes --
+so pool securities get real cohort membership instead of landing in
+scoring.cohorts.UNCLASSIFIED for lack of a SIC code that was simply never fetched.
 """
 
 from __future__ import annotations
@@ -91,10 +96,49 @@ def discover_candidates(
     return [eligible[i] for i in sampled_indices]
 
 
+def resolve_sic_code(
+    conn,
+    sec: SecClient,
+    security_id: int,
+    cik: str | None,
+    cache: dict[str, str | None],
+) -> None:
+    """Fill in sic_code for one security from SEC submissions, if it is
+    currently missing. Skips securities that already have a sic_code (from a
+    prior fixture load or a prior pool run) so a re-run never re-fetches what
+    it already has.
+
+    Same source load_fixture.py already uses (submissions.get("sic")) -- pool
+    discovery just never called it, which is why every pool-only security
+    landed with sic_code NULL and fell into the SIC-UNKNOWN cohort regardless
+    of its real industry.
+    """
+    if not cik:
+        return
+    row = conn.execute(
+        "SELECT sic_code FROM securities WHERE security_id = ?", (security_id,)
+    ).fetchone()
+    if row is None or row[0]:
+        return
+    if cik not in cache:
+        try:
+            submissions = sec.fetch_submissions(cik)
+        except Exception:  # noqa: BLE001
+            submissions = None
+        cache[cik] = (submissions or {}).get("sic") or None
+    sic_code = cache[cik]
+    if sic_code:
+        conn.execute(
+            "UPDATE securities SET sic_code = ? WHERE security_id = ?",
+            (sic_code, security_id),
+        )
+
+
 def load_pool(
     conn,
     candidates: list[dict[str, Any]],
     pool_version: str,
+    sec: SecClient,
     discovery_source: str = "nasdaq_trader_directory_sample",
     verbose: bool = True,
 ) -> list[dict[str, Any]]:
@@ -110,6 +154,7 @@ def load_pool(
         (run_id, now, pool_version),
     )
 
+    sic_cache: dict[str, str | None] = {}
     results: list[dict[str, Any]] = []
     for entry in candidates:
         classification = entry["classification"]
@@ -134,6 +179,8 @@ def load_pool(
                 is_active=True,
                 delisted_date=None,
             )
+
+        resolve_sic_code(conn, sec, security_id, entry["cik"], sic_cache)
 
         identity.add_listing(
             conn,
@@ -193,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
     conn = migrate.connect(Path(args.db))
     try:
         conn.execute("BEGIN")
-        results = load_pool(conn, candidates, args.pool_version)
+        results = load_pool(conn, candidates, args.pool_version, sec)
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
