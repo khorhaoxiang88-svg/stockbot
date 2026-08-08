@@ -780,6 +780,70 @@ export function getScore(securityId: number) {
   return { status: result.status, row: result.rows[0] ?? null };
 }
 
+export type ScannerActivity = {
+  batch_id: string;
+  stage: string;
+  item_key: string;
+  status: "success" | "failed" | "skipped";
+  attempted_at: string;
+  run_id: string;
+  run_status: string | null;
+  run_started_at: string | null;
+  run_finished_at: string | null;
+};
+
+/** Latest per-security work recorded by the scaled scanner. A row is written
+ * after an item finishes, so the UI describes this as activity rather than
+ * pretending it can identify an in-flight symbol before the pipeline commits. */
+export function getLatestScannerActivity(limit = 12) {
+  const safeLimit = Number.isInteger(limit) && limit > 0 ? limit : 12;
+  return readAll<ScannerActivity>(
+    "orchestration_progress",
+    `SELECT o.batch_id, o.stage, o.item_key, o.status, o.attempted_at, o.run_id,
+            p.status AS run_status, p.started_at AS run_started_at,
+            p.finished_at AS run_finished_at
+       FROM orchestration_progress o
+       LEFT JOIN pipeline_runs p ON p.run_id = o.run_id
+      ORDER BY o.attempted_at DESC, o.item_key
+      LIMIT ${safeLimit}`,
+  );
+}
+
+export type RankedScoreSummary = {
+  security_id: number;
+  symbol: string | null;
+  name: string;
+  score_date: string;
+  composite_score: number;
+  value_score: number | null;
+  quality_score: number | null;
+  momentum_score: number | null;
+  insider_bonus: number | null;
+  dilution_penalty: number;
+  rank: number;
+  cohort_id: string | null;
+};
+
+/** Highest ranked rows from the newest completed score date. */
+export function getTopRankedScores(limit = 8) {
+  const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 50) : 8;
+  return readAll<RankedScoreSummary>(
+    "scores",
+    `SELECT sc.security_id, l.symbol, s.name, sc.score_date,
+            sc.composite_score, sc.value_score, sc.quality_score,
+            sc.momentum_score, sc.insider_bonus, sc.dilution_penalty,
+            sc."rank", sc.cohort_id
+       FROM scores sc
+       JOIN securities s ON s.security_id = sc.security_id
+       LEFT JOIN listings l ON l.security_id = sc.security_id AND l.valid_to IS NULL
+      WHERE sc.rankable = 1
+        AND sc.composite_score IS NOT NULL
+        AND sc.score_date = (SELECT MAX(score_date) FROM scores)
+      ORDER BY sc."rank" ASC, sc.security_id ASC
+      LIMIT ${safeLimit}`,
+  );
+}
+
 /** How many securities were ranked on the same date, for "rank N of M". */
 export function getRankedCount(scoreDate: string) {
   const safe = String(scoreDate).replace(/[^0-9-]/g, "");
@@ -1022,6 +1086,7 @@ export const SUPPRESSION_LABELS: Record<string, string> = {
   below_composite_threshold: "Composite below the configured threshold",
   composite_threshold_unset: "Composite threshold is still unset",
   stale_source: "A source failed its freshness check",
+  dilution_or_riskflags_unknown: "Dilution or risk-flag evidence unknown",
   cooldown_recent_exit: "Cooldown: a position exited recently",
   cooldown_gap_cancelled: "Cooldown: gap-cancelled recently",
   open_position: "A position is already open at this horizon",

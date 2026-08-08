@@ -52,6 +52,84 @@ function money(value: number): string {
 
 type HealthEntry = { source: string; ok: boolean; detail: string };
 
+type FilterState = "pass" | "fail" | "unknown";
+
+type FilterCheck = {
+  label: string;
+  state: FilterState;
+};
+
+const FILTER_MARKS: Record<FilterState, { mark: string; word: string }> = {
+  pass: { mark: "✓", word: "Passed" },
+  fail: { mark: "✕", word: "Failed" },
+  unknown: { mark: "?", word: "Missing evidence" },
+};
+
+/**
+ * Turn the pipeline's first-failure reason into a truthful, readable checklist.
+ * A rule before the recorded failure passed; later rules were not evaluated.
+ * Missing evidence is deliberately not shown as a pass or a fail.
+ */
+function filterChecks(row: SuppressedSignal): FilterCheck[] {
+  const detail = row.detail ?? "";
+
+  if (row.suppression_reason === "dilution_or_riskflags_unknown") {
+    const missingDilution = detail.includes("dilution_signals");
+    const missingRiskFlags = detail.includes("risk_flags");
+    return [
+      { label: "In stock universe", state: "pass" },
+      {
+        label: "Composite score",
+        state: row.composite === null ? "unknown" : "pass",
+      },
+      {
+        label: "Dilution evidence",
+        state: missingDilution ? "unknown" : "pass",
+      },
+      {
+        label: "Risk-flag evidence",
+        state: missingRiskFlags ? "unknown" : "pass",
+      },
+      { label: "Final eligibility", state: "fail" },
+    ];
+  }
+
+  const filters: Array<FilterCheck & { reasons: string[] }> = [
+    { label: "Fresh market data", state: "unknown", reasons: ["stale_source"] },
+    { label: "Composite score", state: "unknown", reasons: ["not_rankable"] },
+    { label: "Model supported", state: "unknown", reasons: ["model_not_applicable"] },
+    { label: "Dilution screen", state: "unknown", reasons: ["dilution_disqualified"] },
+    {
+      label: "Risk-flag screen",
+      state: "unknown",
+      reasons: ["risk_flag_going_concern", "risk_flag_dilution_disqualify"],
+    },
+    {
+      label: "Minimum score",
+      state: "unknown",
+      reasons: ["composite_threshold_unset", "below_composite_threshold"],
+    },
+    {
+      label: "Cooldown clear",
+      state: "unknown",
+      reasons: ["cooldown_recent_exit", "cooldown_gap_cancelled"],
+    },
+    {
+      label: "Portfolio limits",
+      state: "unknown",
+      reasons: ["open_position", "book_capacity", "selection_cap", "cohort_cap"],
+    },
+  ];
+
+  const failedAt = filters.findIndex((filter) =>
+    filter.reasons.includes(row.suppression_reason),
+  );
+  return filters.map(({ label }, index) => ({
+    label,
+    state: failedAt === -1 ? "unknown" : index < failedAt ? "pass" : index === failedAt ? "fail" : "unknown",
+  }));
+}
+
 function SuppressionGroup({
   reason,
   rows,
@@ -60,58 +138,64 @@ function SuppressionGroup({
   rows: SuppressedSignal[];
 }) {
   const unique = new Set(rows.map((row) => row.security_id));
+  const stocks = new Map<number, SuppressedSignal[]>();
+  for (const row of rows) {
+    const stockRows = stocks.get(row.security_id) ?? [];
+    stockRows.push(row);
+    stocks.set(row.security_id, stockRows);
+  }
+
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-baseline justify-between gap-3">
-        <h3 className="text-lg font-semibold">
-          {SUPPRESSION_LABELS[reason] ?? reason}
-        </h3>
-        <Badge variant="outline" className="px-3 py-1 font-mono">
+    <details className="suppression-card">
+      <summary>
+        <span className="summary-copy">
+          <strong>{SUPPRESSION_LABELS[reason] ?? reason}</strong>
+          <small>Open to see the affected stocks and full reason.</small>
+        </span>
+        <Badge variant="outline" className="summary-count">
           {unique.size} securit{unique.size === 1 ? "y" : "ies"} · {rows.length} row
           {rows.length === 1 ? "" : "s"}
         </Badge>
+      </summary>
+      <div className="suppressed-stock-grid">
+        {[...stocks.entries()].map(([securityId, stockRows]) => {
+          const firstRow = stockRows[0];
+          const checks = filterChecks(firstRow);
+          return (
+            <article key={securityId} className="suppressed-stock-card">
+              <div>
+                <Link href={`/security/${securityId}`}>
+                  {firstRow.symbol ?? securityId}
+                </Link>
+                <span>{stockRows.map((row) => `${row.horizon_days}d`).join(" + ")}</span>
+              </div>
+              {firstRow.composite !== null ? (
+                <p className="stock-score">
+                  Score {firstRow.composite.toFixed(1)} · Rank {firstRow.rank ?? "—"}
+                </p>
+              ) : null}
+              <ul className="filter-checklist" aria-label="Filter results">
+                {checks.map((check) => {
+                  const display = FILTER_MARKS[check.state];
+                  return (
+                    <li key={check.label} className={`filter-check ${check.state}`}>
+                      <span className="filter-mark" aria-hidden="true">{display.mark}</span>
+                      <span className="filter-name">{check.label}</span>
+                      <strong>{display.word}</strong>
+                    </li>
+                  );
+                })}
+              </ul>
+              <details className="technical-reason">
+                <summary>Why was it rejected?</summary>
+                <p>{firstRow.detail}</p>
+              </details>
+            </article>
+          );
+        })}
       </div>
-      <p className="font-mono text-xs text-muted-foreground">{reason}</p>
-      <div className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Security</TableHead>
-              <TableHead className="text-right">Horizon</TableHead>
-              <TableHead className="text-right">Composite</TableHead>
-              <TableHead className="text-right">Rank</TableHead>
-              <TableHead>Why</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((row) => (
-              <TableRow key={`${row.security_id}-${row.horizon_days}-${reason}`}>
-                <TableCell>
-                  <Link
-                    href={`/security/${row.security_id}`}
-                    className="underline underline-offset-4"
-                  >
-                    {row.symbol ?? row.security_id}
-                  </Link>
-                </TableCell>
-                <TableCell className="text-right font-mono">
-                  {row.horizon_days}d
-                </TableCell>
-                <TableCell className="text-right font-mono">
-                  {row.composite === null ? "—" : row.composite.toFixed(4)}
-                </TableCell>
-                <TableCell className="text-right font-mono">
-                  {row.rank ?? "—"}
-                </TableCell>
-                <TableCell className="text-sm text-muted-foreground">
-                  {row.detail}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-    </div>
+      <p className="rule-key">Rule key: {reason}</p>
+    </details>
   );
 }
 
@@ -151,12 +235,8 @@ export default async function CandidatesPage() {
         / candidates
       </p>
       <h1 className="mb-2">Research candidates</h1>
-      <p className="mb-10 text-muted-foreground">
-        Selection runs once per US trading week, after that week&rsquo;s final
-        regular session closes. It is fully automatic: nothing on this page can be
-        added, removed or reordered by hand, and every stored candidate carries a
-        hash over all of its fields so an edit is detectable rather than merely
-        discouraged.
+      <p className="page-lede">
+        The bot&rsquo;s weekly picks. Zero is a valid result when no stock passes every rule.
       </p>
 
       <ScopeDisclosure />
@@ -186,47 +266,28 @@ export default async function CandidatesPage() {
       ) : (
         <>
           <section className="mb-14 space-y-4">
-            <h2>This week</h2>
-            <div className="flex flex-wrap items-center gap-4">
-              <Badge
-                variant="outline"
-                className={
-                  candidates.rows.length
-                    ? "border-emerald-400/40 bg-emerald-400/15 px-3 py-1 text-lg text-emerald-200"
-                    : "border-amber-400/40 bg-amber-400/15 px-3 py-1 text-lg text-amber-200"
-                }
-              >
-                {candidates.rows.length} candidate
-                {candidates.rows.length === 1 ? "" : "s"}
+            <div className="section-title-row">
+              <div><p className="eyebrow">Latest decision</p><h2>This week</h2></div>
+              <Badge variant="outline" className={candidates.rows.length ? "status-good" : "status-caution"}>
+                {candidates.rows.length} candidate{candidates.rows.length === 1 ? "" : "s"}
               </Badge>
-              <Badge variant="outline" className="px-3 py-1 font-mono">
-                run {run.row.run_id}
-              </Badge>
-              <Badge variant="outline" className="px-3 py-1 font-mono">
-                {run.row.status}
-              </Badge>
-              {first ? (
-                <Badge variant="outline" className="px-3 py-1 font-mono">
-                  evidence cutoff {first.data_cutoff_at}
-                </Badge>
-              ) : null}
             </div>
-            <p className="text-sm text-muted-foreground">
-              Generated {formatEastern(run.row.started_at)}. The two books are
-              separate strategy variants over the <strong>same</strong> candidates,
-              so this week produced {candidates.rows.length} unique originating
-              candidate{candidates.rows.length === 1 ? "" : "s"}
-              {candidates.rows.length > 0
-                ? ` — not ${candidates.rows.length * books.rows.length} observations.`
-                : "."}
+            <div className="mini-facts">
+              <span><small>Status</small><strong>{run.row.status}</strong></span>
+              <span><small>Generated</small><strong>{formatEastern(run.row.started_at)}</strong></span>
+              <span><small>Run</small><strong>run {run.row.run_id}</strong></span>
+              {first ? <span><small>Cutoff</small><strong>evidence cutoff {first.data_cutoff_at}</strong></span> : null}
+            </div>
+            <p className="section-explainer">
+              This week produced {candidates.rows.length} unique originating candidate{candidates.rows.length === 1 ? "" : "s"}
+              {candidates.rows.length > 0 ? ` — not ${candidates.rows.length * books.rows.length} observations.` : "."}
             </p>
 
             {candidates.rows.length === 0 ? (
-              <EmptyState>
-                No candidate was selected. Every security considered is in the
-                suppression log below with its reason — an empty selection is a
-                result, not a gap.
-              </EmptyState>
+              <div className="friendly-empty caution-box">
+                <strong>No stock passed every rule.</strong>
+                <p>Open a rejection group below to see why; an empty selection is a result, not a gap.</p>
+              </div>
             ) : (
               <div className="overflow-x-auto">
                 <Table>
@@ -324,13 +385,16 @@ export default async function CandidatesPage() {
           ) : null}
 
           <section className="mb-14 space-y-6">
-            <h2>Suppression log</h2>
-            <p className="text-sm text-muted-foreground">
-              Everything considered and not selected, with the reason. Rows are per
-              book, so a security blocked only at one horizon appears once. A
-              qualifying signal for a security already held at that horizon is
-              logged here rather than discarded.
-            </p>
+            <div className="section-title-row">
+              <div><p className="eyebrow">Why stocks were rejected</p><h2>Suppression log</h2></div>
+              <span className="quiet-count">{new Set(suppressions.rows.map((row) => row.security_id)).size} stocks</span>
+            </div>
+            <p className="section-explainer">Reasons are grouped and closed by default. Open only what you want to inspect.</p>
+            <div className="filter-legend" aria-label="Filter result legend">
+              <span className="pass"><b>✓</b> Passed</span>
+              <span className="fail"><b>✕</b> Failed</span>
+              <span className="unknown"><b>?</b> Missing evidence / not checked</span>
+            </div>
             {grouped.size === 0 ? (
               <EmptyState>Nothing was suppressed in this run.</EmptyState>
             ) : (
@@ -347,14 +411,15 @@ export default async function CandidatesPage() {
           </section>
 
           <section className="mb-14 space-y-4">
-            <h2>Books</h2>
-            <p className="text-sm text-muted-foreground">
+            <details className="simple-details">
+              <summary><span><strong>Paper-trading books</strong><small>20-day and 60-day tracking</small></span></summary>
+              <p className="section-explainer">
               An experimental accounting convention, <strong>not</strong> recommended
               position sizing. Every position takes the same fixed notional whatever
               its price or volatility, nothing compounds during Release 1, and cash
               earns no interest.
-            </p>
-            <Table>
+              </p>
+              <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Book</TableHead>
@@ -383,11 +448,12 @@ export default async function CandidatesPage() {
                   </TableRow>
                 ))}
               </TableBody>
-            </Table>
-            <p className="text-sm text-muted-foreground">
+              </Table>
+              <p className="text-sm text-muted-foreground">
               The books are separate simulated strategy variants. They are not two
               independent observations and not twice the sample; never pool them.
-            </p>
+              </p>
+            </details>
           </section>
         </>
       )}

@@ -18,6 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { PriceChart, type ChartMarker } from "@/components/price-chart";
+import { InteractivePriceChart } from "@/components/interactive-price-chart";
 import { RiskPanel } from "@/components/risk-panel";
 import { ScoreBreakdown } from "@/components/score-breakdown";
 import {
@@ -57,6 +58,7 @@ import {
 } from "@/lib/db";
 import { rankExclusionReason } from "@/lib/rank";
 import { formatEastern } from "@/lib/time";
+import { getCompanyProfile } from "@/lib/company-profiles";
 
 export const dynamic = "force-dynamic";
 
@@ -272,6 +274,7 @@ export default async function SecurityPage({
     listings.rows.find((listing) => listing.valid_to === null)?.symbol ??
     listings.rows[0]?.symbol ??
     "—";
+  const companyProfile = getCompanyProfile(currentSymbol, row.name, row.sic_code);
 
   return (
     <main className="mx-auto w-full max-w-5xl px-8 py-16">
@@ -311,8 +314,34 @@ export default async function SecurityPage({
           Internal id <span className="font-mono">{row.security_id}</span>. The symbol
           above is a label this security wears today, not its identity.
         </p>
+        <div className="company-summary">
+          <span>What the company does</span>
+          <p>{companyProfile.summary}</p>
+          {companyProfile.source ? (
+            <a href={companyProfile.source} target="_blank" rel="noreferrer">
+              Company source ↗
+            </a>
+          ) : null}
+        </div>
       </header>
 
+      {prices.rows.length > 1 ? (
+        <InteractivePriceChart points={adjusted} markers={markers} symbol={currentSymbol} />
+      ) : (
+        <div className="friendly-empty mb-8">
+          <strong>No chart available yet.</strong>
+          <p>The bot has fewer than two stored price days for this stock.</p>
+        </div>
+      )}
+
+      <details className="security-research-details">
+        <summary>
+          <span>
+            <strong>Open full research evidence</strong>
+            <small>Scores, fundamentals, filings, risks and raw data</small>
+          </span>
+        </summary>
+        <div className="security-research-body">
       <div className="mb-14 grid gap-8 md:grid-cols-2">
         <Card className="gap-6 py-8">
           <CardHeader className="px-8">
@@ -1319,6 +1348,8 @@ export default async function SecurityPage({
           </p>
         )}
       </section>
+        </div>
+      </details>
     </main>
   );
 }

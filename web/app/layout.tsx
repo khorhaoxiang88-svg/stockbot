@@ -1,25 +1,15 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 
 import { ExperimentBanner } from "@/components/experiment-banner";
 import { PhaseBanner } from "@/components/phase-banner";
 import { SiteFooter } from "@/components/site-footer";
+import { SiteNav } from "@/components/site-nav";
 
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
 export const metadata: Metadata = {
-  title: "stockbot",
-  description: "US stock research system",
+  title: "stockbot — Evidence-led US stock research",
+  description: "Auditable stock scores, weekly research candidates, risk flags and forward paper results.",
 };
 
 export default function RootLayout({
@@ -30,9 +20,10 @@ export default function RootLayout({
   return (
     // Dark is the only theme. High contrast, large type.
     <html lang="en" className="dark">
-      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
+      <body className="antialiased">
         <PhaseBanner />
         <ExperimentBanner />
+        <SiteNav />
         {children}
         <SiteFooter />
       </body>

@@ -7,7 +7,8 @@
  */
 export function ScopeDisclosure() {
   return (
-    <div className="mb-8 rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+    <div className="mb-6 rounded-xl border border-sky-400/25 bg-sky-400/8 px-4 py-3 text-sm text-muted-foreground">
+      <strong className="mb-1 block text-sky-200">What this bot covers</strong>
       This system covers primarily profitable, mid-and-large-cap US operating
       companies. It excludes financial companies, REITs, ADRs, unresolvable
       multi-class issuers, and companies without positive earnings. Any
