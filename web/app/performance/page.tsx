@@ -9,6 +9,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { ScopeDisclosure } from "@/components/scope-disclosure";
 import {
   EXECUTION_PROTOCOL_VERSION,
   getActiveExperiment,
@@ -26,6 +27,7 @@ import {
 import { formatEastern } from "@/lib/time";
 import {
   averageWinLoss,
+  evidenceBand,
   maxDrawdown,
   observationWindow,
   pendingAsProvisionalTrades,
@@ -34,6 +36,12 @@ import {
   wilsonInterval,
   type ClosedTrade,
 } from "@/lib/performance";
+
+/** O3's exact timeline statement, displayed once under "Official results". */
+const TIMELINE_STATEMENT =
+  "The earliest status above preliminary evidence is 12 months after the " +
+  "official experiment begins, provided at least 100 positions have closed " +
+  "in that horizon.";
 
 /**
  * Per horizon, never pooled. The 20-day and 60-day books are separate
@@ -87,12 +95,16 @@ function HorizonSection({
   positions,
   benchmarks,
   cancelledForHorizon,
+  isOfficial,
+  experimentStartedAt,
 }: {
   horizon: number;
   book: Book | undefined;
   positions: PaperPosition[];
   benchmarks: BenchmarkPosition[];
   cancelledForHorizon: number;
+  isOfficial: boolean;
+  experimentStartedAt: string | null;
 }) {
   const closed = positions.filter((p) => p.status === "closed");
   const pending = positions.filter((p) => p.status === "pending_resolution");
@@ -134,6 +146,14 @@ function HorizonSection({
   const including = statsFor(tradesIncludingPending);
   const hasPending = pending.length > 0;
 
+  // O3: computed from OFFICIAL closed positions only. `excluding.n` is
+  // already scoped correctly by the caller -- isOfficial=true is only ever
+  // paired with positions drawn from getOfficialPaperPositions -- and
+  // deliberately uses `excluding`, never `including`: a pending position
+  // valued at its provisional zero is not evidence of anything yet, so it
+  // must not inflate the count that decides how much evidence exists.
+  const band = isOfficial ? evidenceBand(excluding.n, experimentStartedAt, asOfDate) : null;
+
   const benchmarkByCandidate = new Map(
     benchmarks.filter((b) => b.status === "closed").map((b) => [b.candidate_id, b]),
   );
@@ -149,6 +169,29 @@ function HorizonSection({
           {book?.book_id ?? `book-${horizon}d`}
         </Badge>
       </div>
+
+      {band ? (
+        <div
+          className={`rounded-lg border px-4 py-3 text-sm ${
+            band.tier === "evaluation_possible"
+              ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-100"
+              : band.tier === "preliminary"
+                ? "border-amber-400/40 bg-amber-400/10 text-amber-100"
+                : "border-border bg-muted/40 text-muted-foreground"
+          }`}
+        >
+          <span className="text-base font-semibold">{band.label}</span>
+          <span className="ml-2 font-mono text-xs">
+            {excluding.n} official closed position{excluding.n === 1 ? "" : "s"} at this
+            horizon
+          </span>
+          <p className="mt-1 text-xs">
+            A null result — no detectable edge — reads exactly like this: an honest
+            evidence band and the full statistics below it, not a missing feature or a
+            problem awaiting a fix.
+          </p>
+        </div>
+      ) : null}
 
       {hasPending ? (
         <p className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-4 py-2 text-sm text-amber-100">
@@ -430,7 +473,6 @@ export default async function PerformancePage() {
     benchmarks: getPreLaunchBenchmarkPositions(horizon).rows,
   }));
 
-  const totalOfficialPositions = perHorizonOfficial.reduce((s, h) => s + h.positions.length, 0);
   const totalPreLaunchPositions = perHorizonPreLaunch.reduce((s, h) => s + h.positions.length, 0);
 
   // A cancellation applies to every horizon a candidate was permitted into, but
@@ -460,6 +502,8 @@ export default async function PerformancePage() {
         not be read as one.
       </div>
 
+      <ScopeDisclosure />
+
       <div className="mb-10 flex flex-wrap items-center gap-4">
         <Badge variant="outline" className="px-3 py-1 text-lg">
           {uniqueCandidates} unique originating candidate{uniqueCandidates === 1 ? "" : "s"}
@@ -474,7 +518,7 @@ export default async function PerformancePage() {
       <section className="mb-14">
         <h2 className="mb-3">Official results</h2>
         {experiment ? (
-          <p className="mb-6 text-sm text-muted-foreground">
+          <p className="mb-3 text-sm text-muted-foreground">
             Experiment <span className="font-mono">{experiment.experiment_id}</span>, live
             since {formatEastern(experiment.started_at)} (strategy v
             {experiment.strategy_version}). Only candidates generated at or after that
@@ -483,20 +527,18 @@ export default async function PerformancePage() {
             the query layer, not by convention.
           </p>
         ) : (
-          <p className="mb-6 text-sm text-muted-foreground">
+          <p className="mb-3 text-sm text-muted-foreground">
             No official experiment has launched yet (pipeline/launch/open_experiment.py
             has not run). Zero official trades is the correct state, not a missing
             feature.
           </p>
         )}
-        {totalOfficialPositions === 0 ? (
-          <EmptyState>
-            No official trades yet.{" "}
-            {experiment
-              ? "The official run has not filled a position yet."
-              : "The experiment has not opened."}
-          </EmptyState>
-        ) : (
+        <p className="mb-6 text-sm text-muted-foreground">{TIMELINE_STATEMENT}</p>
+        {
+          // Always rendered, even at zero official closed positions: an
+          // evidence band of "Insufficient evidence" IS the correct, complete
+          // answer at n=0, not a state that gets swallowed by a generic empty
+          // message. See O3's null-result requirement.
           perHorizonOfficial.map((h) => (
             <HorizonSection
               key={h.horizon}
@@ -505,9 +547,11 @@ export default async function PerformancePage() {
               positions={h.positions}
               benchmarks={h.benchmarks}
               cancelledForHorizon={0}
+              isOfficial
+              experimentStartedAt={experiment?.started_at ?? null}
             />
           ))
-        )}
+        }
       </section>
 
       <section className="border-t border-border pt-10">
@@ -535,6 +579,8 @@ export default async function PerformancePage() {
               positions={h.positions}
               benchmarks={h.benchmarks}
               cancelledForHorizon={cancelledByHorizon.get(h.horizon) ?? 0}
+              isOfficial={false}
+              experimentStartedAt={null}
             />
           ))
         )}

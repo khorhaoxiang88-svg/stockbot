@@ -263,11 +263,18 @@ describe("performance page", () => {
   });
 
   it("shows the empty state when nothing has been executed", async () => {
+    // A bare migrated DB, not buildDatabase()-then-DELETE: migration 023's
+    // paper_positions_no_delete trigger correctly forbids deleting a row
+    // once inserted (see README's O3 section) -- the empty state is
+    // reached by never inserting anything, not by erasing it afterward.
     const { default: Database } = await import("better-sqlite3");
-    await buildDatabase();
     const db = new Database(dbPath);
-    db.prepare("DELETE FROM paper_positions").run();
-    db.prepare("DELETE FROM cancelled_entries").run();
+    for (const file of fs
+      .readdirSync(MIGRATIONS)
+      .filter((name) => name.endsWith(".up.sql"))
+      .sort()) {
+      db.exec(fs.readFileSync(path.join(MIGRATIONS, file), "utf-8"));
+    }
     db.close();
     const html = await renderPerformancePage();
     expect(html).toContain("No data yet");
@@ -328,8 +335,11 @@ describe("official vs pre-launch separation (migration 022)", () => {
     await buildDatabase();
     const html = await renderPerformancePage();
     expect(html).toContain("Official results");
-    expect(html).toContain("No official trades yet");
-    expect(html).toContain("experiment has not opened");
+    expect(html).toContain("No official experiment has launched yet");
+    // O3: the evidence band renders even at zero, per horizon -- not a
+    // generic empty state swallowing the official section.
+    expect(html).toContain("Insufficient evidence");
+    expect(html).toContain("0 official closed positions at this horizon");
     // Every seeded position lands in the pre-launch section instead.
     expect(html).toContain("Pre-launch results");
   });
@@ -339,7 +349,8 @@ describe("official vs pre-launch separation (migration 022)", () => {
     await openExperimentAfterFixtureDates();
     const html = await renderPerformancePage();
     expect(html).toContain("exp-launch");
-    expect(html).toContain("No official trades yet");
+    expect(html).toContain("Insufficient evidence");
+    expect(html).toContain("0 official closed positions at this horizon");
     expect(html).not.toContain("111.10"); // no official trade inserted yet
   });
 

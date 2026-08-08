@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 
 import { ExperimentBanner } from "@/components/experiment-banner";
 import { PhaseBanner } from "@/components/phase-banner";
+import { SiteFooter } from "@/components/site-footer";
 
 import "./globals.css";
 
@@ -33,6 +34,7 @@ export default function RootLayout({
         <PhaseBanner />
         <ExperimentBanner />
         {children}
+        <SiteFooter />
       </body>
     </html>
   );

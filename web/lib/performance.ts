@@ -151,6 +151,63 @@ export type PendingPosition = {
  * Zero is the only value consistent with the recorded policy rather than an
  * invented haircut.
  */
+// -------------------------------------------------------------- O3: evidence bands
+
+export const EVIDENCE_BAND_PRELIMINARY_MIN = 30;
+export const EVIDENCE_BAND_EVALUATION_MIN = 100;
+export const EVIDENCE_BAND_EVALUATION_MONTHS = 12;
+
+export type EvidenceBand = {
+  tier: "insufficient" | "preliminary" | "evaluation_possible";
+  label: string;
+};
+
+/**
+ * O3's evidence band, per horizon, computed from OFFICIAL closed positions
+ * only -- the caller is responsible for that exclusion (closedCount must
+ * already come from official_positions, never pre-launch/provisional rows).
+ *
+ * The 100-or-more band additionally requires 12 months since the official
+ * experiment started, independent of count: a strategy that closed 100
+ * positions in six weeks by chance is not 12 months more evaluated for it.
+ * Both conditions must hold, or the label falls back to "Preliminary
+ * evidence" -- there is no band for "enough trades, not enough time" other
+ * than preliminary, matching the exact timeline statement this function's
+ * result is displayed next to on /performance.
+ */
+export function evidenceBand(
+  closedCount: number,
+  experimentStartedAt: string | null,
+  asOfIso: string,
+): EvidenceBand {
+  if (closedCount < EVIDENCE_BAND_PRELIMINARY_MIN) {
+    return { tier: "insufficient", label: "Insufficient evidence" };
+  }
+  if (closedCount < EVIDENCE_BAND_EVALUATION_MIN) {
+    return { tier: "preliminary", label: "Preliminary evidence" };
+  }
+  const monthsElapsed = experimentStartedAt
+    ? monthsBetween(experimentStartedAt, asOfIso)
+    : 0;
+  if (monthsElapsed >= EVIDENCE_BAND_EVALUATION_MONTHS) {
+    return { tier: "evaluation_possible", label: "Evaluation possible, not validated" };
+  }
+  return { tier: "preliminary", label: "Preliminary evidence" };
+}
+
+/** Whole months between two ISO-8601 timestamps, floored. Calendar-month
+ * arithmetic (not a fixed 30-day divisor) so "12 months" means the same
+ * thing a human reading a calendar means by it. */
+function monthsBetween(startIso: string, endIso: string): number {
+  const start = new Date(startIso);
+  const end = new Date(endIso);
+  let months =
+    (end.getUTCFullYear() - start.getUTCFullYear()) * 12 +
+    (end.getUTCMonth() - start.getUTCMonth());
+  if (end.getUTCDate() < start.getUTCDate()) months -= 1;
+  return Math.max(0, months);
+}
+
 export function pendingAsProvisionalTrades(
   pending: PendingPosition[],
   asOfDate: string,

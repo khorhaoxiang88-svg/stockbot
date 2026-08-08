@@ -1748,3 +1748,34 @@ export function getLatestCalibrationReport(): { status: DbStatus; report: Calibr
     return { status: result.status, report: null };
   }
 }
+
+// --------------------------------------------------------- O3: defect_log
+
+export type Defect = {
+  defect_id: string;
+  discovered_at: string; // UTC ISO-8601
+  severity: "cosmetic" | "data_correction" | "material";
+  description: string;
+  affected_strategy_version: number | null;
+  affected_candidates_json: string | null;
+  resolution: string | null;
+  new_strategy_version: number | null;
+  published_at: string | null; // UTC ISO-8601; NULL until published
+};
+
+/** /changelog's data: only PUBLISHED defects, newest first. A logged-but-
+ * unpublished defect_log row (published_at IS NULL) is a draft mid-
+ * investigation and never appears here -- migration 023's defect_log_no_delete
+ * / defect_log_core_immutable make the eventual published record tamper-evident,
+ * not the drafting process. */
+export function getPublishedDefects() {
+  return readAll<Defect>(
+    "defect_log",
+    `SELECT defect_id, discovered_at, severity, description,
+            affected_strategy_version, affected_candidates_json, resolution,
+            new_strategy_version, published_at
+       FROM defect_log
+      WHERE published_at IS NOT NULL
+      ORDER BY published_at DESC`,
+  );
+}

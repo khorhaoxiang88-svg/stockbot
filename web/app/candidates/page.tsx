@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { ScopeDisclosure } from "@/components/scope-disclosure";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -157,6 +158,8 @@ export default async function CandidatesPage() {
         hash over all of its fields so an edit is detectable rather than merely
         discouraged.
       </p>
+
+      <ScopeDisclosure />
 
       {isStale && latestAttempt.row ? (
         <div className="mb-10 rounded-lg border border-amber-400/40 bg-amber-400/10 p-5 text-sm text-amber-100">

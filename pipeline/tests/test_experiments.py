@@ -211,6 +211,78 @@ def test_an_ended_experiment_does_not_block_a_new_active_one(conn):
     assert active["experiment_id"] == "exp-2"
 
 
+def test_status_may_transition_from_active_to_compromised_with_a_reason(conn):
+    seed_experiment(conn)
+    conn.execute(
+        "UPDATE experiments SET status = 'compromised', "
+        "compromised_reason = 'defect-material-1: ATR window off-by-one' "
+        "WHERE experiment_id = 'exp-1'"
+    )
+    row = conn.execute(
+        "SELECT status, compromised_reason FROM experiments WHERE experiment_id = 'exp-1'"
+    ).fetchone()
+    # "Visibly marked": both the status and the reason are stored and readable,
+    # not merely implied by the experiment no longer being active.
+    assert row["status"] == "compromised"
+    assert "defect-material-1" in row["compromised_reason"]
+
+
+def test_compromising_requires_a_reason(conn):
+    seed_experiment(conn)
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+        conn.execute(
+            "UPDATE experiments SET status = 'compromised' WHERE experiment_id = 'exp-1'"
+        )
+
+
+def test_a_compromised_experiments_own_official_positions_disappear_from_the_official_view(conn):
+    """O3 AUTOMATED TEST: 'A compromised strategy version is visibly marked
+    and its results are not merged forward with the new one.' The official_*
+    views (migration 022) already join on status = 'active' -- compromising
+    is exactly the same view-level exclusion 'ended' already gets, proven
+    here explicitly for 'compromised' rather than assumed from the 'ended'
+    case above."""
+    seed_security(conn)
+    seed_snapshot_and_run(conn)
+    seed_experiment(conn, started_at="2026-08-01T00:00:00Z", experiment_id="exp-1")
+    seed_candidate(conn, "cand-official", 1, generated_at="2026-08-05T00:00:00Z")
+    seed_position(conn, "pos-official", "cand-official")
+    assert conn.execute("SELECT COUNT(*) AS n FROM official_positions").fetchone()["n"] == 1
+
+    conn.execute(
+        "UPDATE experiments SET status = 'compromised', compromised_reason = 'test' "
+        "WHERE experiment_id = 'exp-1'"
+    )
+    # The position row itself is untouched (migration 023: a closed position
+    # is immutable) -- only its OFFICIAL status disappears.
+    assert conn.execute("SELECT COUNT(*) AS n FROM official_positions").fetchone()["n"] == 0
+    still_there = conn.execute(
+        "SELECT position_id FROM paper_positions WHERE position_id = 'pos-official'"
+    ).fetchone()
+    assert still_there is not None
+
+
+def test_a_new_experiment_after_a_compromise_never_inherits_the_old_ones_positions(conn):
+    seed_security(conn)
+    seed_snapshot_and_run(conn)
+    seed_experiment(conn, started_at="2026-08-01T00:00:00Z", experiment_id="exp-1")
+    seed_candidate(conn, "cand-old", 1, generated_at="2026-08-05T00:00:00Z")
+    seed_position(conn, "pos-old", "cand-old")
+    conn.execute(
+        "UPDATE experiments SET status = 'compromised', compromised_reason = 'test' "
+        "WHERE experiment_id = 'exp-1'"
+    )
+
+    seed_experiment(conn, started_at="2026-09-01T00:00:00Z", experiment_id="exp-2")
+    seed_candidate(conn, "cand-new", 1, generated_at="2026-09-05T00:00:00Z")
+    seed_position(conn, "pos-new", "cand-new")
+
+    official_ids = {
+        r["position_id"] for r in conn.execute("SELECT position_id FROM official_positions")
+    }
+    assert official_ids == {"pos-new"}
+
+
 # --------------------------------------------------- 3. launch respects the config lock
 
 

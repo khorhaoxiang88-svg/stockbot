@@ -1694,6 +1694,97 @@ pipeline/.venv/Scripts/python.exe pipeline/scheduler/weekly.py --as-of 2026-08-0
 pipeline/.venv/Scripts/python.exe pipeline/scheduler/monthly.py --as-of 2026-08-01
 ```
 
+## O3: disclosures, evidence bands, change control (migration 023)
+
+The final Phase O step: what makes the official experiment's results
+honestly interpretable as evidence accumulates, and what happens when a
+defect is found in it.
+
+### Evidence bands (`web/lib/performance.ts::evidenceBand`)
+
+Per horizon, from OFFICIAL closed positions only (never pre-launch,
+provisional, or the "including pending @ zero" view):
+
+| Closed | Band |
+|---|---|
+| < 30 | Insufficient evidence |
+| 30-99 | Preliminary evidence |
+| ≥ 100 **and** ≥ 12 months since `experiments.started_at` | Evaluation possible, not validated |
+| ≥ 100, < 12 months | Preliminary evidence (the count alone is never enough) |
+
+Rendered on `/performance` per horizon, even at zero -- an "Insufficient
+evidence" band at n=0 is the correct, complete state on a freshly-launched
+experiment, not a placeholder waiting for real content. The exact timeline
+statement is shown once, under "Official results":
+
+> The earliest status above preliminary evidence is 12 months after the
+> official experiment begins, provided at least 100 positions have closed
+> in that horizon.
+
+### Scope disclosure (`web/components/scope-disclosure.tsx`)
+
+Permanent, on `/performance` and `/candidates` (this project's screener):
+
+> This system covers primarily profitable, mid-and-large-cap US operating
+> companies. It excludes financial companies, REITs, ADRs, unresolvable
+> multi-class issuers, and companies without positive earnings. Any result
+> generalises only to that population.
+
+### Footer (`web/components/site-footer.tsx`, every page via `app/layout.tsx`)
+
+> Personal research tool. Not financial advice. Not a licensed financial
+> advisor. Private, non-commercial use only - the price data source is not
+> licensed for redistribution or commercial use.
+
+### Bug-correction policy, `defect_log`, `/changelog`
+
+`defect_log` (migration 023) is append-only in the same shape as
+`experiments`/`frozen_config_lock`: core facts (`severity`, `description`,
+`affected_strategy_version`, `affected_candidates_json`) are immutable once
+set; `resolution`, `new_strategy_version` and `published_at` fill in as the
+investigation concludes. `/changelog` shows only rows with `published_at`
+set -- a defect mid-investigation is not public yet.
+
+Three severities, matching the policy exactly:
+- **cosmetic** -- no experiment restart, logged.
+- **data_correction** -- no official candidate affected: audited, logged, continue.
+- **material** -- an official candidate was affected: the affected
+  `strategy_version` is marked `experiments.status = 'compromised'` (with
+  `compromised_reason`, S5's existing column), every record stays exactly as
+  it was, the defect is published on `/changelog`, and a new `strategy_version`
+  begins a separately-reported experiment. `frozen_config_lock` and
+  `defect_log.new_strategy_version` both FK to the new version, so the chain
+  from "what broke" to "what replaced it" is queryable, not just narrated.
+
+**"Never silently rewritten" is enforced at the schema level, not by
+convention.** `research_candidates` already had this (migration 011);
+migration 023 gives `paper_positions` and `benchmark_positions` the same
+guarantee they were missing -- once `status = 'closed'`, the row can never
+be UPDATEd or DELETEd again, full stop. This was a real, unintentional gap:
+every closing UPDATE in `execution/compute.py` already only ever fires once
+per position (immediately followed by `return`), so no existing code path
+is affected -- the trigger only ever fires on an attempt to rewrite a result
+already at rest. Verified in `pipeline/tests/test_defect_log.py` and
+`pipeline/tests/test_experiments.py` (the compromised-experiment tests).
+
+### Null-result requirement
+
+`/performance` must be able to show "no detectable edge" as clearly as a
+positive one. **Standing rule, not just for this session:** no feature,
+weight, threshold, exclusion, or reporting change may be introduced in
+response to disappointing results without going through the bug-correction
+policy above first. A null result is a finding, not a bug.
+
+### Language audit
+
+Scanned `web/app` and `web/components` for "recommendation", "top pick",
+"buy" (word-boundary), "signal to act": **zero instances found.** The
+site's existing copy (candidates page, suppression labels, experiment
+banner) already used "research candidate" / "candidate" consistently
+throughout every prior phase -- nothing needed changing. Guarded going
+forward by `web/tests/language-audit.test.ts`, an automated scan of the
+same two directories, not a one-time manual check.
+
 ## Traps already paid for
 
 These cost real debugging time. They are recorded so they are not rediscovered.

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   averageWinLoss,
+  evidenceBand,
   maxDrawdown,
   observationWindow,
   pendingAsProvisionalTrades,
@@ -174,5 +175,55 @@ describe("pendingAsProvisionalTrades", () => {
       "2026-08-02",
     );
     expect(trades[0].net_pnl).toBe(-985);
+  });
+});
+
+describe("evidenceBand", () => {
+  const STARTED_LONG_AGO = "2020-01-01T00:00:00Z"; // >> 12 months before any asOf below
+  const ASOF = "2026-08-07T00:00:00Z";
+
+  it("is insufficient at 0 and at 29 closed positions", () => {
+    expect(evidenceBand(0, STARTED_LONG_AGO, ASOF).tier).toBe("insufficient");
+    expect(evidenceBand(29, STARTED_LONG_AGO, ASOF).tier).toBe("insufficient");
+    expect(evidenceBand(29, STARTED_LONG_AGO, ASOF).label).toBe("Insufficient evidence");
+  });
+
+  it("becomes preliminary exactly at 30, and stays preliminary through 99", () => {
+    expect(evidenceBand(30, STARTED_LONG_AGO, ASOF).tier).toBe("preliminary");
+    expect(evidenceBand(30, STARTED_LONG_AGO, ASOF).label).toBe("Preliminary evidence");
+    expect(evidenceBand(99, STARTED_LONG_AGO, ASOF).tier).toBe("preliminary");
+  });
+
+  it("reaches evaluation-possible only at 100+ AND 12+ months since the experiment started", () => {
+    expect(evidenceBand(100, STARTED_LONG_AGO, ASOF).tier).toBe("evaluation_possible");
+    expect(evidenceBand(100, STARTED_LONG_AGO, ASOF).label).toBe(
+      "Evaluation possible, not validated",
+    );
+  });
+
+  it("holds the 12-month gate independently of count -- 100+ trades inside 12 months is still preliminary", () => {
+    const startedRecently = "2026-06-01T00:00:00Z"; // ~2 months before ASOF
+    const band = evidenceBand(500, startedRecently, ASOF);
+    expect(band.tier).toBe("preliminary");
+    expect(band.label).toBe("Preliminary evidence");
+  });
+
+  it("does not let a long-running but low-count experiment reach evaluation-possible on time alone", () => {
+    const band = evidenceBand(99, STARTED_LONG_AGO, ASOF);
+    expect(band.tier).toBe("preliminary");
+  });
+
+  it("treats a null experiment start (no experiment launched) as never eligible for evaluation-possible", () => {
+    const band = evidenceBand(500, null, ASOF);
+    expect(band.tier).toBe("preliminary");
+  });
+
+  it("is exact at the 12-month boundary, not off by a day", () => {
+    // Exactly 12 calendar months before ASOF (2026-08-07 -> 2025-08-07).
+    const exactlyTwelveMonths = "2025-08-07T00:00:00Z";
+    expect(evidenceBand(100, exactlyTwelveMonths, ASOF).tier).toBe("evaluation_possible");
+    // One day short of 12 months.
+    const oneDayShort = "2025-08-08T00:00:00Z";
+    expect(evidenceBand(100, oneDayShort, ASOF).tier).toBe("preliminary");
   });
 });
