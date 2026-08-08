@@ -87,7 +87,7 @@
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
+  --radius: 0.75rem;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
@@ -132,17 +132,40 @@
   --sidebar-ring: oklch(0.556 0 0);
 }
 
-/* Dark palette overrides: pushed further apart than the shadcn defaults for
-   higher contrast. Background near-black, foreground near-white. */
+/* Dark palette overrides: a real brand color (violet, hue 293, paired with
+   cyan, hue 200, for gradients) instead of the shadcn default's flat
+   0-chroma greyscale. First pass at this (chroma 0.012-0.02) was too timid
+   to actually read as colorful against the near-black background -- pushed
+   much further here: visible violet-tinted surfaces, saturated borders, a
+   punchier primary. The existing semantic colors (emerald = official/good,
+   amber = caution/pending, red = fail/severe, applied ad-hoc per element
+   throughout every page) are UNCHANGED -- violet/cyan are deliberately hues
+   none of them use, so they read as "brand", never as a fourth status
+   meaning. */
 .dark {
-  --background: oklch(0.13 0.005 285);
-  --foreground: oklch(0.98 0 0);
-  --card: oklch(0.19 0.006 285);
-  --card-foreground: oklch(0.98 0 0);
-  --muted: oklch(0.26 0.006 285);
-  --muted-foreground: oklch(0.78 0 0);
-  --border: oklch(1 0 0 / 16%);
-  --input: oklch(1 0 0 / 20%);
+  --background: oklch(0.115 0.024 279);
+  --foreground: oklch(0.97 0.006 280);
+  --card: oklch(0.195 0.038 282);
+  --card-foreground: oklch(0.97 0.006 280);
+  --popover: oklch(0.195 0.038 282);
+  --popover-foreground: oklch(0.97 0.006 280);
+  --primary: oklch(0.74 0.22 293);
+  --primary-foreground: oklch(0.14 0.03 293);
+  --secondary: oklch(0.27 0.045 283);
+  --secondary-foreground: oklch(0.97 0.006 280);
+  --muted: oklch(0.235 0.032 281);
+  --muted-foreground: oklch(0.8 0.03 280);
+  --accent: oklch(0.34 0.09 291);
+  --accent-foreground: oklch(0.97 0.02 291);
+  --border: oklch(0.75 0.09 290 / 32%);
+  --input: oklch(0.75 0.09 290 / 36%);
+  --ring: oklch(0.74 0.22 293 / 65%);
+  --chart-1: oklch(0.74 0.22 293);
+  --chart-2: oklch(0.75 0.16 200);
+  --chart-3: oklch(0.8 0.14 150);
+  --chart-4: oklch(0.62 0.19 293);
+  --chart-5: oklch(0.7 0.18 40);
+  --sidebar-primary: oklch(0.74 0.22 293);
 }
 
 @layer base {
@@ -151,21 +174,56 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-size: 1rem;
-    line-height: 1.6;
+    /* Body text never drops below 18px. */
+    font-size: 1.125rem;
+    line-height: 1.7;
+    /* A fixed dual-tone glow (violet top-left, cyan bottom-right) behind
+       every page -- bold enough to actually register as color, not a
+       near-invisible tint. Fixed attachment so it reads as one atmosphere
+       behind the whole site rather than repeating per page/scroll. */
     background-image:
-      radial-gradient(circle at 12% 4%, oklch(.36 .08 247 / .13), transparent 28rem),
-      radial-gradient(circle at 88% 12%, oklch(.35 .08 158 / .1), transparent 26rem);
+      radial-gradient(ellipse 60% 50% at 15% -10%, oklch(0.6 0.2 293 / 30%), transparent 60%),
+      radial-gradient(ellipse 55% 45% at 100% 10%, oklch(0.55 0.16 200 / 22%), transparent 60%),
+      radial-gradient(ellipse 50% 40% at 50% 110%, oklch(0.55 0.18 293 / 16%), transparent 65%);
     background-attachment: fixed;
+    background-repeat: no-repeat;
   }
   html {
     @apply font-sans;
+  }
+  a {
+    transition: color 150ms ease, opacity 150ms ease;
+  }
+  ::selection {
+    background: oklch(0.72 0.19 293 / 35%);
+    color: var(--foreground);
+  }
+  ::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: oklch(0.85 0.02 290 / 20%);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: oklch(0.85 0.02 290 / 32%);
+    background-clip: padding-box;
   }
   h1 {
     font-size: clamp(2rem, 4vw, 2.75rem);
     line-height: 1.15;
     font-weight: 700;
     letter-spacing: -0.02em;
+    background-image: linear-gradient(100deg, oklch(0.85 0.17 293), oklch(0.8 0.15 220));
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
   }
   h2 {
     font-size: clamp(1.35rem, 2.5vw, 1.8rem);
@@ -441,4 +499,21 @@ main:not(.dashboard-shell) > section > h2 { color: oklch(.84 .1 247); }
   .summary-count { margin-left: 2.55rem; }
   .stock-chart-heading { align-items: flex-start; flex-direction: column; }
   .ranking-status-box a { width: 100%; margin-left: 0; }
+}
+
+@layer utilities {
+  /* Opt-in hero-heading treatment -- violet (--primary) into a cool cyan,
+     applied only where a page chooses it via className, never forced
+     globally. Text content is untouched; this only changes how the existing
+     characters are painted. */
+  .text-gradient-brand {
+    background-image: linear-gradient(
+      100deg,
+      oklch(0.8 0.16 293),
+      oklch(0.78 0.14 230)
+    );
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+  }
 }
