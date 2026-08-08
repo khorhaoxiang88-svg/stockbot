@@ -844,6 +844,69 @@ export function getTopRankedScores(limit = 8) {
   );
 }
 
+export type SecuritySearchResult = {
+  security_id: number;
+  symbol: string | null;
+  name: string;
+  score_date: string | null;
+  composite_score: number | null;
+  value_score: number | null;
+  quality_score: number | null;
+  momentum_score: number | null;
+  dilution_penalty: number | null;
+  rank: number | null;
+  withhold_reason: string | null;
+};
+
+/**
+ * Ticker/name search, newest score joined in (NULL when never scored or
+ * withheld). LIKE match, case-insensitive by SQLite's default ASCII folding;
+ * an exact symbol match sorts first, then by rank so a well-known ticker
+ * with a common substring elsewhere in the name still surfaces on top.
+ */
+export function searchSecurities(query: string, limit = 20) {
+  const trimmed = query.trim();
+  const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 50) : 20;
+  if (!trimmed) return { status: { state: "ok" as const, path: DB_PATH }, rows: [] as SecuritySearchResult[] };
+
+  let db: Database.Database | null = null;
+  try {
+    db = openReadOnly();
+    if (!db) return { status: { state: "missing" as const, path: DB_PATH }, rows: [] };
+    if (!tableExists(db, "securities")) {
+      return { status: { state: "ok" as const, path: DB_PATH }, rows: [] };
+    }
+
+    const like = `%${trimmed}%`;
+    const rows = db
+      .prepare(
+        `SELECT s.security_id, l.symbol, s.name, sc.score_date,
+                sc.composite_score, sc.value_score, sc.quality_score,
+                sc.momentum_score, sc.dilution_penalty, sc."rank",
+                sc.withhold_reason
+           FROM securities s
+           LEFT JOIN listings l ON l.security_id = s.security_id AND l.valid_to IS NULL
+           LEFT JOIN scores sc ON sc.security_id = s.security_id
+                              AND sc.score_date = (SELECT MAX(score_date) FROM scores)
+          WHERE l.symbol LIKE ? OR s.name LIKE ?
+          ORDER BY (UPPER(l.symbol) = UPPER(?)) DESC,
+                   CASE WHEN sc."rank" IS NULL THEN 1 ELSE 0 END, sc."rank" ASC,
+                   s.name ASC
+          LIMIT ?`,
+      )
+      .all(like, like, trimmed, safeLimit) as SecuritySearchResult[];
+
+    return { status: { state: "ok" as const, path: DB_PATH }, rows };
+  } catch (error) {
+    return {
+      status: { state: "error" as const, path: DB_PATH, message: (error as Error).message },
+      rows: [] as SecuritySearchResult[],
+    };
+  } finally {
+    db?.close();
+  }
+}
+
 /** How many securities were ranked on the same date, for "rank N of M". */
 export function getRankedCount(scoreDate: string) {
   const safe = String(scoreDate).replace(/[^0-9-]/g, "");
@@ -927,6 +990,86 @@ export const RISK_FLAG_LABELS: Record<string, string> = {
   going_concern: "Going concern",
   stale_or_incomplete_data: "Stale or incomplete data",
   recent_insider_selling: "Recent insider selling",
+};
+
+/**
+ * News Ledger, Stage A (R2-NEWS-1.0, migration 024) -- shadow mode.
+ *
+ * These read effective_news_events (the supersession-aware view) and
+ * news_filings only. Nothing here reads or joins scores, research_candidates,
+ * risk_flags or experiments -- there is no scoring relationship to display
+ * yet, because Stage B does not exist.
+ */
+export type NewsFiling = {
+  accession_no: string;
+  form_type: string;
+  filed_date: string | null;
+  accepted_at: string | null;
+  primary_doc_url: string | null;
+};
+
+export type NewsEvent = {
+  event_id: string;
+  accession_no: string;
+  accepted_at: string | null;
+  source_document: string;
+  extracted_at: string;
+  is_abstain: number;
+  abstain_reason: string | null;
+  event_type_candidate: string | null;
+  confirmation_tier: "binding" | "non_binding_loi" | "rumor" | null;
+  amount_explicit: number;
+  amount_stated: number | null;
+  amount_type: string | null;
+  currency: string | null;
+  contract_duration_months: number | null;
+  annualization_method: string | null;
+  includes_optional_extensions: number | null;
+  supporting_passage: string;
+  extraction_model_version: string;
+  extraction_prompt_version: string;
+  filed_date: string | null;
+  primary_doc_url: string | null;
+};
+
+/** Every 8-K/8-K-A this security's news_filings row covers, newest first. */
+export function getNewsFilingsFor(securityId: number) {
+  return readAll<NewsFiling>(
+    "news_filings",
+    `SELECT accession_no, form_type, filed_date, accepted_at, primary_doc_url
+       FROM news_filings
+      WHERE security_id = ${Number(securityId) || 0}
+      ORDER BY filed_date DESC`,
+  );
+}
+
+/** Currently-effective extracted events for this security, newest first. */
+export function getNewsEventsFor(securityId: number) {
+  return readAll<NewsEvent>(
+    "news_events",
+    `SELECT e.event_id, e.accession_no, e.accepted_at, e.source_document, e.extracted_at,
+            e.is_abstain, e.abstain_reason, e.event_type_candidate, e.confirmation_tier,
+            e.amount_explicit, e.amount_stated, e.amount_type, e.currency,
+            e.contract_duration_months, e.annualization_method,
+            e.includes_optional_extensions, e.supporting_passage,
+            e.extraction_model_version, e.extraction_prompt_version,
+            f.filed_date, f.primary_doc_url
+       FROM effective_news_events e
+       LEFT JOIN news_filings f ON f.accession_no = e.accession_no
+      WHERE e.security_id = ${Number(securityId) || 0}
+      ORDER BY e.extracted_at DESC`,
+  );
+}
+
+export const NEWS_EVENT_TYPE_LABELS: Record<string, string> = {
+  binding_commercial_contract: "Binding commercial contract",
+  contract_termination: "Contract termination / cancellation",
+  lawsuit: "Lawsuit",
+  merger_acquisition: "Merger or acquisition",
+  financing_or_securities_issuance: "Financing / securities issuance",
+  partnership_no_disclosed_commitment: "Partnership, no disclosed commitment",
+  non_binding_loi_or_mou: "Non-binding LOI / MOU",
+  rumor_unnamed_source: "Rumor / unnamed source",
 };
 
 export type SelectionRun = {

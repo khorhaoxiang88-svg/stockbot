@@ -335,6 +335,37 @@ main:not(.dashboard-shell) > section > h2 { color: oklch(.84 .1 247); }
 .site-nav-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 1.2rem; }
 .site-nav-links a { color: var(--muted-foreground); font-size: .82rem; transition: color .15s ease; }
 .site-nav-links a:hover { color: oklch(.82 .15 158); }
+.site-nav-search input {
+  width: 11rem;
+  padding: .5rem .8rem;
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: .82rem;
+}
+.site-nav-search input:focus { outline: 2px solid var(--ring); outline-offset: 1px; }
+
+.search-form { display: flex; gap: .7rem; max-width: 32rem; margin: 1.5rem 0 2.5rem; }
+.search-form input {
+  flex: 1;
+  padding: .8rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 1rem;
+}
+.search-form input:focus { outline: 2px solid var(--ring); outline-offset: 1px; }
+.search-form button {
+  padding: .8rem 1.4rem;
+  border-radius: .55rem;
+  font-size: .85rem;
+  font-weight: 700;
+  color: oklch(.13 .005 285);
+  background: oklch(.82 .15 158);
+}
+.score-withheld { color: var(--muted-foreground); font-size: .85rem; }
 
 .dashboard-shell { width: min(1500px, calc(100% - 3rem)); margin: 0 auto; padding: clamp(2.5rem, 5vw, 4.5rem) 0 6rem; }
 .dashboard-hero { display: grid; grid-template-columns: 1.4fr .6fr; gap: clamp(2rem, 6vw, 6rem); align-items: end; }
@@ -477,6 +508,7 @@ main:not(.dashboard-shell) > section > h2 { color: oklch(.84 .1 247); }
   .site-nav-links { width: 100%; flex-wrap: nowrap; justify-content: flex-start; gap: 1.3rem; overflow-x: auto; padding: .2rem 0 .4rem; scrollbar-width: none; }
   .site-nav-links::-webkit-scrollbar { display: none; }
   .site-nav-links a { flex: 0 0 auto; white-space: nowrap; }
+  .site-nav-search input { width: 100%; }
   .dashboard-hero, .transparency-panel, .operations-grid { grid-template-columns: 1fr; }
   .dashboard-metrics, .rank-grid, .workflow-grid, .run-card-list { grid-template-columns: repeat(2, 1fr); }
   .suppressed-stock-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

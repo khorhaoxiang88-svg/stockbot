@@ -26,6 +26,9 @@ export function SiteNav() {
           <Link key={href} href={href}>{label}</Link>
         ))}
       </div>
+      <form action="/search" method="get" className="site-nav-search" role="search">
+        <input type="text" name="q" placeholder="Ticker or company" aria-label="Search by ticker or company name" />
+      </form>
     </nav>
   );
 }
