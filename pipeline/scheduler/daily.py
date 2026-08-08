@@ -1,0 +1,224 @@
+"""S6 daily job: everything the brief's DAILY schedule names, after the US
+market close --
+
+  price ingestion, Form 4 ingestion, scheduled XBRL refresh, scoring,
+  risk flags, open-position monitoring and exit evaluation, data health,
+  severe new risk flag logging
+
+-- each stage is the same CLI a human already runs by hand (see README);
+this script only sequences them, isolates one stage's failure from the
+rest (scheduler.common.run_stage never raises), and writes the daily log.
+
+Deliberately NOT run daily: dilution. riskflags/compute.py reads the latest
+dilution_signals row as of the cutoff date, not strictly today's -- an older
+row degrades gracefully rather than being treated as missing (selection
+already excludes securities with no row at all, see S3). The brief's daily
+list does not name it either. Refreshing it is a scope decision for whoever
+schedules dilution's own cadence, not something to fold in here silently.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import date
+from pathlib import Path
+
+PIPELINE_DIR = Path(__file__).resolve().parent.parent
+if str(PIPELINE_DIR) not in sys.path:
+    sys.path.insert(0, str(PIPELINE_DIR))
+
+import migrate  # noqa: E402
+from config_loader import load_config  # noqa: E402
+from scheduler.common import (  # noqa: E402
+    LOG_DIR,
+    REPO_ROOT,
+    RunLog,
+    existing_log_dates,
+    latest_pool_version,
+    missed_run_dates,
+    record_scheduler_run,
+    run_stage,
+    utc_today,
+)
+from selection import freshness as FR  # noqa: E402
+
+JOB = "daily"
+MISSED_RUN_PERIOD_DAYS = 1
+
+
+def _stage_specs(pool: str | None, today: str, db: str) -> list[tuple[str, list[str]]]:
+    common = ["--db", db]
+    pool_args = ["--pool", pool] if pool else []
+    return [
+        ("prices", ["pipeline/orchestrate/run.py", "--tier", "prices", *pool_args,
+                    "--batch-id", f"prices-{today}", *common]),
+        ("form4", ["pipeline/orchestrate/run.py", "--tier", "form4", *pool_args,
+                   "--batch-id", f"form4-{today}", *common]),
+        ("xbrl", ["pipeline/orchestrate/run.py", "--tier", "xbrl", *pool_args,
+                  "--batch-id", f"xbrl-{today}", *common]),
+        ("fundamentals", ["pipeline/fundamentals/compute.py", *pool_args, *common]),
+        ("scoring", ["pipeline/scoring/compute.py", *pool_args, "--as-of", today, *common]),
+        ("riskflags", ["pipeline/orchestrate/run.py", "--tier", "riskflags", *pool_args,
+                        "--as-of", today, "--batch-id", f"riskflags-{today}", *common]),
+        ("execution", ["pipeline/execution/compute.py", "--as-of", today, *common]),
+    ]
+
+
+def _log_missed_runs(conn, log: RunLog, today: date) -> list[str]:
+    dates = existing_log_dates(JOB)
+    last = dates[-1] if dates else None
+    missed = missed_run_dates(last, today, MISSED_RUN_PERIOD_DAYS)
+    if missed:
+        log.section("MISSED RUNS DETECTED")
+        for d in missed:
+            log.line(f"  no {JOB} log found for {d.isoformat()}")
+        errors = [f"missed {JOB} run: {d.isoformat()}" for d in missed]
+        record_scheduler_run(conn, f"{JOB}_missed", "failed", 0, errors)
+        return errors
+    return []
+
+
+def _log_data_health(conn, cfg, log: RunLog, today: str) -> None:
+    log.section("data health")
+    cutoff_utc = f"{today}T23:59:59Z"
+    now_utc = cutoff_utc
+    report = FR.check_pipeline_freshness(conn, cutoff_utc, now_utc, cfg)
+    for status in report.statuses:
+        log.line(f"  {'ok  ' if status.ok else 'FAIL'} {status.source}: {status.detail}")
+    log.line(f"  overall: {'ok' if report.ok else 'DEGRADED'}")
+
+    log.section("source health snapshot")
+    for row in conn.execute(
+        "SELECT source_name, last_success, last_error, consecutive_failures, "
+        "staleness_hours, coverage_pct FROM source_health ORDER BY source_name"
+    ):
+        flag = " *** " if row["consecutive_failures"] and row["consecutive_failures"] > 0 else "     "
+        log.line(
+            f"{flag}{row['source_name']}: last_success={row['last_success']} "
+            f"consecutive_failures={row['consecutive_failures']} "
+            f"staleness_hours={row['staleness_hours']} coverage_pct={row['coverage_pct']}"
+        )
+
+
+def _log_severe_risk_flags(conn, log: RunLog, today: str) -> int:
+    log.section("severe new risk flags")
+    rows = conn.execute(
+        "SELECT rf.security_id, l.symbol, rf.flag_code, rf.evidence_text "
+        "FROM risk_flags rf "
+        "LEFT JOIN listings l ON l.security_id = rf.security_id AND l.valid_to IS NULL "
+        "WHERE rf.as_of_date = ? AND rf.severity = 'high' "
+        "ORDER BY rf.security_id",
+        (today,),
+    ).fetchall()
+    if not rows:
+        log.line("  none")
+        return 0
+    for row in rows:
+        symbol = row["symbol"] or row["security_id"]
+        log.line(f"  SEVERE  {symbol}  {row['flag_code']}  {row['evidence_text']}")
+    return len(rows)
+
+
+def _log_positions(conn, log: RunLog, today: str) -> None:
+    # paper_positions has no security_id column of its own -- it is reached
+    # through the candidate it was opened from (matches web/lib/db.ts's own
+    # JOIN research_candidates c ON c.candidate_id = p.candidate_id).
+    opened = conn.execute(
+        "SELECT p.position_id, c.security_id, p.book_id FROM paper_positions p "
+        "JOIN research_candidates c ON c.candidate_id = p.candidate_id "
+        "WHERE p.entry_date = ?",
+        (today,),
+    ).fetchall()
+    closed = conn.execute(
+        "SELECT p.position_id, c.security_id, p.exit_reason FROM paper_positions p "
+        "JOIN research_candidates c ON c.candidate_id = p.candidate_id "
+        "WHERE p.exit_date = ?",
+        (today,),
+    ).fetchall()
+    pending = conn.execute(
+        "SELECT p.position_id, c.security_id FROM paper_positions p "
+        "JOIN research_candidates c ON c.candidate_id = p.candidate_id "
+        "WHERE p.status = 'pending_resolution'"
+    ).fetchall()
+
+    log.section("positions opened today")
+    if not opened:
+        log.line("  0 opened")
+    else:
+        for r in opened:
+            log.line(f"  {r['position_id']} security={r['security_id']} book={r['book_id']}")
+
+    log.section("positions closed today")
+    if not closed:
+        log.line("  0 closed")
+    else:
+        for r in closed:
+            log.line(f"  {r['position_id']} security={r['security_id']} reason={r['exit_reason']}")
+
+    log.section("pending resolutions")
+    if not pending:
+        log.line("  none")
+    else:
+        for r in pending:
+            log.line(f"  {r['position_id']} security={r['security_id']}")
+
+
+def run_daily(db: str, today: str | None = None) -> int:
+    today = today or utc_today()
+    log = RunLog(JOB, today)
+    conn = migrate.connect(Path(db))
+    cfg = load_config()
+
+    missed_errors = _log_missed_runs(conn, log, date.fromisoformat(today))
+
+    pool = latest_pool_version(conn)
+    log.section("pool")
+    log.line(f"  {pool or '(none loaded -- falling back to fixture securities)'}")
+
+    stage_results = {}
+    for name, args in _stage_specs(pool, today, db):
+        log.section(f"stage: {name}")
+        result = run_stage(name, args)
+        stage_results[name] = result
+        log.line(f"  ok={result.ok} returncode={result.returncode}")
+        if result.error:
+            log.line(f"  error: {result.error}")
+        if result.stdout_tail:
+            log.line("  --- stdout (tail) ---")
+            log.line(result.stdout_tail)
+        if not result.ok and result.stderr_tail:
+            log.line("  --- stderr (tail) ---")
+            log.line(result.stderr_tail)
+
+    _log_data_health(conn, cfg, log, today)
+    severe_count = _log_severe_risk_flags(conn, log, today)
+    _log_positions(conn, log, today)
+
+    log_path = log.write()
+
+    failed_stages = [name for name, r in stage_results.items() if not r.ok]
+    status = "success" if not failed_stages and not missed_errors else (
+        "failed" if len(failed_stages) == len(stage_results) else "partial"
+    )
+    errors = missed_errors + [f"stage failed: {name}" for name in failed_stages]
+    record_scheduler_run(conn, JOB, status, severe_count, errors)
+
+    conn.close()
+    print(f"daily run {today}: status={status} log={log_path}")
+    if failed_stages:
+        print(f"  failed stages: {', '.join(failed_stages)}")
+    return 1 if failed_stages else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="S6 daily scheduled run")
+    parser.add_argument("--db", default=str(migrate.DEFAULT_DB_PATH))
+    parser.add_argument("--as-of", default=None, help="defaults to today (UTC)")
+    args = parser.parse_args(argv)
+    return run_daily(args.db, args.as_of)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

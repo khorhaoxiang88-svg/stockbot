@@ -14,6 +14,8 @@ import {
   getBooks,
   getCandidatesForRun,
   getLatestSelectionRun,
+  getPublishedSelectionRun,
+  getStaleSourceReason,
   getSuppressionsForRun,
   type SuppressedSignal,
 } from "@/lib/db";
@@ -113,7 +115,14 @@ function SuppressionGroup({
 }
 
 export default async function CandidatesPage() {
-  const run = getLatestSelectionRun();
+  const latestAttempt = getLatestSelectionRun();
+  const run = getPublishedSelectionRun();
+  const isStale = Boolean(
+    latestAttempt.row && run.row && latestAttempt.row.run_id !== run.row.run_id,
+  );
+  const staleReason = isStale && latestAttempt.row
+    ? getStaleSourceReason(latestAttempt.row.run_id)
+    : null;
   const candidates = run.row ? getCandidatesForRun(run.row.run_id) : { rows: [] };
   const suppressions = run.row
     ? getSuppressionsForRun(run.row.run_id)
@@ -149,10 +158,27 @@ export default async function CandidatesPage() {
         discouraged.
       </p>
 
+      {isStale && latestAttempt.row ? (
+        <div className="mb-10 rounded-lg border border-amber-400/40 bg-amber-400/10 p-5 text-sm text-amber-100">
+          <p className="font-semibold">
+            Screener stale — the most recent selection run ({formatEastern(latestAttempt.row.started_at)})
+            was blocked by a required source failure and generated no new candidates.
+          </p>
+          {staleReason ? <p className="mt-1 font-mono text-xs">{staleReason}</p> : null}
+          <p className="mt-2">
+            {run.row
+              ? `Showing the last published screener, from ${formatEastern(run.row.started_at)}.`
+              : "No screener has ever been successfully published."}
+          </p>
+        </div>
+      ) : null}
+
       {!run.row ? (
         <EmptyState>
-          No data yet. Run pipeline/selection/compute.py to produce a weekly
-          selection.
+          {latestAttempt.row
+            ? "No selection has ever successfully published candidates — every run so far " +
+              "was blocked by a required source failure. See the warning above."
+            : "No data yet. Run pipeline/selection/compute.py to produce a weekly selection."}
         </EmptyState>
       ) : (
         <>

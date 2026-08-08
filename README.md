@@ -1587,6 +1587,113 @@ recomputed), cohort sizes and per-metric valid-observation counts, and the
 threshold sweep table. The "Calibration data — non-official. No return
 information is used or displayed." banner is permanent on this page.
 
+## S6: unattended scheduling (`pipeline/scheduler/`)
+
+No new pipeline logic. `daily.py`, `weekly.py`, `monthly.py` sequence the
+same CLI scripts documented above -- each one still runnable by hand exactly
+as shown in its own section -- and add only what running several of them
+unattended needs: per-stage failure isolation, a plain-text log per run, a
+`pipeline_runs` row per scheduler invocation (so it shows up in `/health`'s
+run history the same way any stage already does), and missed-run detection.
+
+### Cadence
+
+| Job | Runs | What it calls |
+|---|---|---|
+| `daily.py` | every day, after US close | prices, Form 4, XBRL + fundamentals, scoring, risk flags, execution (position monitoring/exit eval), then a read-only data-health check and a severe-risk-flag scan |
+| `weekly.py` | once per US trading week | `selection/compute.py` (official run) |
+| `monthly.py` | once a month | `orchestrate/run.py --tier universe --run-type monthly_membership` (hysteresis lives in `universe/membership.py::compute_snapshot`, untouched) |
+
+`daily.py` never calls selection -- it only ever runs from `weekly.py` --
+so a blocked or delayed weekly run cannot stop daily monitoring, and a
+daily-stage failure (`scheduler/common.py::run_stage`, which never raises)
+cannot stop the remaining daily stages either.
+
+"Fires exactly once per trading week" is not enforced by `weekly.py` itself;
+it is enforced two layers down and would hold even if the trigger fired
+twice: `trading_calendar.latest_complete_week` refuses an incomplete week,
+and `research_candidates.candidate_id` is deterministic per week, so a
+re-run cannot duplicate it (`test_candidate_id_is_deterministic_so_a_rerun_cannot_duplicate`).
+
+### Logs
+
+One file per run, under `data/logs/`: `daily-YYYY-MM-DD.log`,
+`weekly-YYYY-MM-DD.log`, `monthly-YYYY-MM-DD.log` (the date is the
+invocation date, not a week/month key). Each daily log's sections: pool
+used, each stage's stdout/stderr tail, the read-only data-health report,
+every `severity='high'` risk flag logged today, positions opened/closed
+today, and open `pending_resolution` positions.
+
+### Missed-run detection
+
+Each job checks the newest existing log for its own type before doing
+anything else. A gap bigger than its expected period (1 day / 7 days / ~30
+days, `scheduler/common.py::missed_run_dates`) is written into that run's
+log under `MISSED RUNS DETECTED` **and** recorded as its own
+`pipeline_runs` row (`stage='scheduler_<job>_missed'`, `status='failed'`)
+so it is visible on `/health` even if nobody reads the log file. A run that
+fires and finds the week/month not yet complete (see above) still writes
+its log -- "missed" means the scheduled process never ran at all (machine
+off, task disabled), not "ran and correctly declined."
+
+### A source failure never blanks the screener
+
+`selection/compute.py` already suppresses every considered security as
+`stale_source` (and writes zero candidates) when a required source fails
+its freshness check -- that part needed no change. What did: `/candidates`
+used to always render the *newest* selection run, so a blocked week
+displayed as an empty page, indistinguishable from "0 candidates was a
+fair result." `web/lib/db.ts::getPublishedSelectionRun` now picks the
+newest run that was **not** an all-`stale_source` run, and the page renders
+a warning naming the failed source when that differs from the newest
+attempt -- see `web/tests/candidates-page.test.tsx`'s
+`"preserves the last published screener..."` test.
+
+### Windows Task Scheduler
+
+This machine's timezone is Singapore Standard Time (UTC+8, no DST). US
+market close (4:00pm ET) lands at 4:00am SGT (EDT) or 5:00am SGT (EST) the
+next calendar day depending on the time of year -- the trigger times below
+are chosen with margin on both sides of that, not tied to ET at all; each
+script is otherwise timezone-agnostic (everything it reads/writes is UTC).
+
+Run from an elevated PowerShell or Command Prompt (the tasks run under
+whichever account creates them, and only while that account is logged in --
+add `/RU` and `/RP` to a command below, which will prompt for that
+account's password, to run whether logged on or not):
+
+```bash
+schtasks /create /tn "Stockbot\Daily" /sc daily /st 06:00 /f /tr "\"C:\Users\USER\stockbot\pipeline\.venv\Scripts\python.exe\" \"C:\Users\USER\stockbot\pipeline\scheduler\daily.py\""
+
+schtasks /create /tn "Stockbot\Weekly" /sc weekly /d SUN /st 06:00 /f /tr "\"C:\Users\USER\stockbot\pipeline\.venv\Scripts\python.exe\" \"C:\Users\USER\stockbot\pipeline\scheduler\weekly.py\""
+
+schtasks /create /tn "Stockbot\Monthly" /sc monthly /d 1 /st 07:00 /f /tr "\"C:\Users\USER\stockbot\pipeline\.venv\Scripts\python.exe\" \"C:\Users\USER\stockbot\pipeline\scheduler\monthly.py\""
+```
+
+Sunday 06:00 SGT for the weekly job is deliberate, not arbitrary: it is
+`2026-08-08T22:00:00Z` in UTC terms -- Saturday, UTC-wise -- which is the
+earliest point `trading_calendar`'s weekend-settled rule (`as_of` date is at
+or after that week's Saturday) can pass for a week whose last session was
+the preceding Friday. Moving this trigger earlier than Sunday 00:00 SGT
+risks firing while the UTC date is still Friday, which would make the week
+look incomplete and the run a permanent no-op, once a week, forever.
+
+Verify or remove a task:
+
+```bash
+schtasks /query /tn "Stockbot\Daily" /v /fo list
+schtasks /delete /tn "Stockbot\Daily" /f
+```
+
+Each script also runs by hand exactly like every other CLI in this doc,
+which is how the manual-verification checklist below exercises them:
+
+```bash
+pipeline/.venv/Scripts/python.exe pipeline/scheduler/daily.py --as-of 2026-08-06
+pipeline/.venv/Scripts/python.exe pipeline/scheduler/weekly.py --as-of 2026-08-08
+pipeline/.venv/Scripts/python.exe pipeline/scheduler/monthly.py --as-of 2026-08-01
+```
+
 ## Traps already paid for
 
 These cost real debugging time. They are recorded so they are not rediscovered.

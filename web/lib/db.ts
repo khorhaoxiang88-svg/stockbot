@@ -934,6 +934,46 @@ export function getLatestSelectionRun() {
   return { status: result.status, row: result.rows[0] ?? null };
 }
 
+/**
+ * The newest selection run NOT blocked by a required-source failure -- the
+ * screener actually shown on /candidates.
+ *
+ * selection/compute.py suppresses every considered row as 'stale_source' when
+ * a required source fails its freshness check, which always yields zero
+ * written candidates for that run. A run with that suppression is excluded
+ * here so a source outage never blanks the page: the last run that really
+ * published candidates (or a genuine zero-candidate week -- no stale_source
+ * suppression, everything considered was suppressed on its own merits) stays
+ * on screen instead, and getLatestSelectionRun (above) is used separately to
+ * detect and explain the gap.
+ */
+export function getPublishedSelectionRun() {
+  const result = readAll<SelectionRun>(
+    "pipeline_runs",
+    `SELECT run_id, started_at, finished_at, status, records_written, code_version
+       FROM pipeline_runs r WHERE stage = 'selection'
+      AND NOT EXISTS (
+        SELECT 1 FROM suppressed_signals s
+         WHERE s.run_id = r.run_id AND s.suppression_reason = 'stale_source'
+      )
+      ORDER BY started_at DESC LIMIT 1`,
+  );
+  return { status: result.status, row: result.rows[0] ?? null };
+}
+
+/** Why the newest selection run (if different from the published one) was
+ * blocked -- the detail text selection/compute.py stored on every
+ * stale_source suppression for that run (they all carry the same message). */
+export function getStaleSourceReason(runId: string) {
+  const safe = String(runId).replace(/[^A-Za-z0-9_-]/g, "");
+  const result = readAll<{ detail: string | null }>(
+    "suppressed_signals",
+    `SELECT detail FROM suppressed_signals
+      WHERE run_id = '${safe}' AND suppression_reason = 'stale_source' LIMIT 1`,
+  );
+  return result.rows[0]?.detail ?? null;
+}
+
 export function getCandidatesForRun(runId: string) {
   const safe = String(runId).replace(/[^A-Za-z0-9_-]/g, "");
   const result = readAll<ResearchCandidate>(

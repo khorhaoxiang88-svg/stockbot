@@ -109,6 +109,83 @@ async function buildDatabase(withCandidate: boolean) {
   db.close();
 }
 
+/**
+ * A required source failing must not blank the screener: the last published
+ * (real) selection stays on screen, tagged stale, while the newer blocked
+ * run -- every row suppressed as stale_source, zero candidates -- is named
+ * in a warning rather than displayed as this week's (empty) result.
+ */
+async function buildStaleBlockedDatabase() {
+  const { default: Database } = await import("better-sqlite3");
+  const db = new Database(dbPath);
+  for (const file of fs
+    .readdirSync(MIGRATIONS)
+    .filter((name) => name.endsWith(".up.sql"))
+    .sort()) {
+    db.exec(fs.readFileSync(path.join(MIGRATIONS, file), "utf-8"));
+  }
+
+  db.prepare(
+    `INSERT INTO securities (security_id, cik, share_class, name, security_type,
+                             classification_confidence, classification_source, sic_code,
+                             first_seen, last_seen, is_active, delisted_date)
+     VALUES (1, '0000000001', NULL, 'Acme Manufacturing Inc.', 'common_stock', 'high',
+             'test', '3571', '2026-07-17T00:00:00Z', '2026-07-17T00:00:00Z', 1, NULL)`,
+  ).run();
+  db.prepare(
+    `INSERT INTO listings (security_id, symbol, exchange, valid_from, valid_to, is_primary)
+     VALUES (1, 'ACME', 'NYSE', '2026-07-17', NULL, 1)`,
+  ).run();
+  db.prepare(
+    `INSERT INTO universe_snapshot_runs (snapshot_id, effective_at, rules_version,
+                                         config_hash, run_id, security_count, is_official)
+     VALUES ('universe-2026-07-17-abcdef12', '2026-07-17', 'F8-scoring/v1', 'cfg', NULL, 1, 1)`,
+  ).run();
+  db.prepare(
+    `INSERT INTO books (book_id, horizon_days, starting_nav, current_nav,
+                        open_position_count, strategy_version)
+     VALUES ('book-20d', 20, 100000, 100000, 0, 1), ('book-60d', 60, 100000, 100000, 0, 1)`,
+  ).run();
+
+  // The published run, from last week: one real candidate.
+  db.prepare(
+    `INSERT INTO pipeline_runs (run_id, stage, started_at, finished_at, status,
+                                records_written, code_version)
+     VALUES ('selection-published01', 'selection', '2026-07-17T21:00:00Z',
+             '2026-07-17T21:00:05Z', 'success', 1, 'selection-rule-1.1/v1')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO research_candidates (candidate_id, security_id, generated_at,
+      data_cutoff_at, snapshot_id, pipeline_run_id, strategy_version, config_hash,
+      code_version, selection_rule_version, mapping_version, price_dataset_version,
+      price_snapshot_hash, source_health_snapshot_json, score_snapshot_json,
+      accessions_used_json, composite_at_generation, rank_at_generation, signal_close,
+      atr_value, atr_window, price_data_cutoff, entry_rule, gap_limit_atr, row_hash)
+     VALUES ('cand-published01', 1, '2026-07-17T21:00:00Z', '2026-07-17T20:00:00Z',
+      'universe-2026-07-17-abcdef12', 'selection-published01', 1,
+      'd22cc26e7e1955e7a25c48bf81046ddd', 'selection-rule-1.1/v1', 1, '1',
+      2, 'ps-hash', ?, ?, '["0000320193-25-000079"]',
+      58.0785, 1, 214.35, 4.212, 14, '2026-07-17',
+      'next_regular_session_open, subject to the gap filter', 1.0, 'rowhash0123456789')`,
+  ).run(HEALTH, SCORE);
+
+  // This week's run: blocked entirely by a stale required source.
+  db.prepare(
+    `INSERT INTO pipeline_runs (run_id, stage, started_at, finished_at, status,
+                                records_written, code_version)
+     VALUES ('selection-blocked01', 'selection', '2026-07-24T21:00:00Z',
+             '2026-07-24T21:00:05Z', 'partial', 0, 'selection-rule-1.1/v1')`,
+  ).run();
+  db.prepare(
+    `INSERT INTO suppressed_signals (run_id, security_id, horizon_days, composite,
+                                     "rank", suppression_reason, detail)
+     VALUES ('selection-blocked01', 1, 20, NULL, NULL, 'stale_source',
+             'prices_daily:price_ingest: last succeeded 2026-07-20T00:00:00Z, 117h ago against a 24h SLA')`,
+  ).run();
+
+  db.close();
+}
+
 async function renderCandidatesPage(): Promise<string> {
   vi.resetModules();
   vi.doMock("@/lib/paths", () => ({
@@ -200,5 +277,19 @@ describe("candidates page", () => {
     // The suppression log still explains what happened.
     expect(html).toContain("Suppression log");
     expect(html).toContain("Cohort already at its maximum");
+  });
+
+  it("preserves the last published screener when a required source blocks the newest run", async () => {
+    await buildStaleBlockedDatabase();
+    const html = await renderCandidatesPage();
+    // The old, real candidate is still shown, not the newer empty run.
+    expect(html).toContain("1 candidate");
+    expect(html).toContain("ACME");
+    expect(html).toContain("run selection-published01");
+    // A prominent warning names the block and the stale reason.
+    expect(html).toContain("Screener stale");
+    expect(html).toContain("blocked by a required source failure");
+    expect(html).toContain("prices_daily:price_ingest");
+    expect(html).toContain("117h ago against a 24h SLA");
   });
 });

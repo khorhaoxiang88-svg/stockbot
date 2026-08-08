@@ -79,7 +79,10 @@ function StatusBadge({ status }: { status: string }) {
 
 export default async function HealthPage() {
   const sources = getSourceHealth();
-  const runs = getRecentRuns();
+  // The S6 schedulers add several pipeline_runs rows per day (one per
+  // stage, plus a scheduler_daily/weekly/monthly summary row) -- the old
+  // default of 20 covered barely 2-3 days. 75 keeps roughly a week visible.
+  const runs = getRecentRuns(75);
   const migrations = getAppliedMigrations();
   const config = tryLoadConfig();
   const configLocks = getFrozenConfigLocks();
