@@ -69,7 +69,8 @@ describe("home page", () => {
     const db = await migrateOnly();
     db.close();
     const html = await renderHomePage();
-    expect(html).toContain("No official experiment has launched yet");
+    expect(html).toContain("NOT LAUNCHED");
+    expect(html).toContain("<dt>Started</dt><dd>—</dd>");
   });
 
   it("states the live experiment's start date and strategy version when one is active", async () => {
@@ -81,17 +82,19 @@ describe("home page", () => {
     ).run();
     db.close();
     const html = await renderHomePage();
-    expect(html).toContain("Official forward experiment live since");
-    expect(html).toContain("strategy v2");
-    expect(html).not.toContain("No official experiment has launched yet");
+    expect(html).toContain(">LIVE<");
+    expect(html).toContain("<dt>Strategy</dt><dd>v2</dd>");
+    expect(html).not.toContain("NOT LAUNCHED");
   });
 
   it("links to every live page", async () => {
     const db = await migrateOnly();
     db.close();
-    const html = await renderHomePage();
+    const homeHtml = await renderHomePage();
+    const { SiteNav } = await import("@/components/site-nav");
+    const navHtml = renderToStaticMarkup(SiteNav());
     for (const href of ["/performance", "/candidates", "/universe", "/health", "/changelog"]) {
-      expect(html).toContain(`href="${href}"`);
+      expect(homeHtml + navHtml).toContain(`href="${href}"`);
     }
   });
 });

@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import Database from "better-sqlite3";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -28,7 +29,6 @@ async function renderBanner(dbPath: string): Promise<string> {
 }
 
 function migratedDb(dbPath: string) {
-  const Database = require("better-sqlite3");
   const db = new Database(dbPath);
   for (const file of fs
     .readdirSync(path.join(REPO_ROOT, "migrations"))

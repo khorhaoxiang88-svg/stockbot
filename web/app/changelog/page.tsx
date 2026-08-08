@@ -1,14 +1,6 @@
 import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { getPublishedDefects, type Defect } from "@/lib/db";
 import { formatEastern } from "@/lib/time";
 
