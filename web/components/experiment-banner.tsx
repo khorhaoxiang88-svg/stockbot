@@ -5,9 +5,9 @@ import { formatEastern } from "@/lib/time";
  * The official-launch banner, required on every page: the start date and
  * strategy version of the official forward experiment (migration 022), or a
  * clear "not yet launched" state before pipeline/launch/open_experiment.py
- * has run. A separate async server component, not inlined in layout.tsx, for
- * the same reason phase-banner.tsx is: layout.tsx must stay renderable
- * outside `next build`/`next dev` for its own unit tests.
+ * has run. A separate async server component, not inlined in layout.tsx,
+ * because layout.tsx must stay renderable outside `next build`/`next dev`
+ * for its own unit tests (see site-footer.tsx for the same reasoning).
  */
 export async function ExperimentBanner() {
   const { row: experiment } = getActiveExperiment();

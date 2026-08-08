@@ -49,10 +49,14 @@ const TIMELINE_STATEMENT =
  * this page is computed twice, independently, and never blended into one
  * combined number.
  *
- * "Engineering validation dataset — not strategy performance" is the root
- * layout's banner, shown on every page including this one; it is repeated here
- * in the page's own copy because this is the page where that caveat matters
- * most.
+ * "Engineering validation dataset — not strategy performance" used to be a
+ * root-layout banner shown unconditionally on every page (phase-banner.tsx,
+ * removed) -- wrong once official results existed, since it contradicted the
+ * live ExperimentBanner on the very same pages and falsely implied even
+ * /health and /changelog were "one execution against a 50-security fixture."
+ * It is now scoped precisely to where it's actually true: the Pre-launch
+ * results section below, the only place fixture-only numbers are shown as
+ * results rather than as membership/coverage metadata.
  */
 
 export const dynamic = "force-dynamic";
@@ -494,13 +498,6 @@ export default async function PerformancePage() {
         / performance
       </p>
       <h1 className="mb-2">Performance</h1>
-      <div className="mb-8 rounded-lg border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
-        <strong>Engineering validation dataset — not strategy performance.</strong>{" "}
-        Every number below comes from one execution of a frozen protocol
-        (<span className="font-mono">{EXECUTION_PROTOCOL_VERSION}</span>) against a
-        50-security fixture. It is not a backtest of a trading strategy and must
-        not be read as one.
-      </div>
 
       <ScopeDisclosure />
 
@@ -558,6 +555,13 @@ export default async function PerformancePage() {
         <h2 className="mb-3 text-muted-foreground">
           Pre-launch results (Phase F fixture / Phase S paper trades)
         </h2>
+        <div className="mb-6 rounded-lg border border-amber-400/40 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+          <strong>Engineering validation dataset — not strategy performance.</strong>{" "}
+          Every number in this section comes from one execution of a frozen
+          protocol (<span className="font-mono">{EXECUTION_PROTOCOL_VERSION}</span>)
+          against the Phase F 50-security fixture. It is not a backtest of a
+          trading strategy and must not be read as one.
+        </div>
         <p className="mb-6 text-sm text-muted-foreground">
           Permanently excluded from official statistics — never merged, backfilled or
           retroactively counted into the section above, no matter what happens later.

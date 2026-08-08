@@ -1,12 +1,11 @@
 /**
  * O3's mandatory footer, required on every page: not financial advice, not a
  * licensed advisor, and the price-data licensing boundary. A plain
- * synchronous component (no DB read) since the text is fixed, matching
- * phase-banner.tsx's reason for being its own component rather than inlined
- * in layout.tsx -- layout.tsx must stay renderable outside next build/dev
- * for its own unit tests (see tests/layout.test.tsx), so every mandatory
- * site-wide notice lives in a component layout.tsx imports and renders,
- * verified by reading it rather than rendering it directly in tests.
+ * synchronous component (no DB read) since the text is fixed. layout.tsx
+ * can't be rendered directly in a unit test (next/font/google), so every
+ * mandatory site-wide notice lives in its own component that layout.tsx
+ * imports and renders, verified by reading layout.tsx rather than rendering
+ * it (see tests/site-footer.test.tsx, tests/scope-disclosure.test.tsx).
  */
 export function SiteFooter() {
   return (

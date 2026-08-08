@@ -1,9 +1,8 @@
 /**
  * O3's mandatory footer must appear on every page. Tested as its own
- * component for the same reason phase-banner.tsx is (see layout.test.tsx):
- * layout.tsx can't be rendered directly in a unit test (next/font/google),
- * so layout.tsx's inclusion of SiteFooter ahead of </body> is verified by
- * reading it, and the text itself is verified here.
+ * component because layout.tsx can't be rendered directly in a unit test
+ * (next/font/google) -- layout.tsx's inclusion of SiteFooter ahead of
+ * </body> is verified by reading it, and the text itself is verified here.
  */
 
 import { renderToStaticMarkup } from "react-dom/server";

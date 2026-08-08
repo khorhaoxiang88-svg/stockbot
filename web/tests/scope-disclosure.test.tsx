@@ -1,7 +1,7 @@
 /**
  * O3's permanent scope disclosure must appear on /performance and
  * /candidates (this project's screener). Tested as its own component,
- * same reasoning as phase-banner.tsx / site-footer.tsx.
+ * same reasoning as site-footer.tsx.
  */
 
 import { renderToStaticMarkup } from "react-dom/server";

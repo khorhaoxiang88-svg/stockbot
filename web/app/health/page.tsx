@@ -112,9 +112,9 @@ export default async function HealthPage() {
         </p>
         <h1>System health</h1>
         <p className="max-w-3xl text-muted-foreground">
-          Phase 1 skeleton. No market data is collected yet, so empty tables below
-          are the expected state. All timestamps are stored in UTC and shown here
-          in US Eastern.
+          Pipeline run history, source freshness, applied migrations and the
+          Phase F exit-criteria verification record. All timestamps are
+          stored in UTC and shown here in US Eastern.
         </p>
         <p className="text-base text-muted-foreground">
           <Link href="/" className="underline underline-offset-4 hover:text-foreground">
