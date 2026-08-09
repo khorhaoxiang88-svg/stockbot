@@ -1616,16 +1616,45 @@ run history the same way any stage already does), and missed-run detection.
 | `weekly.py` | once per US trading week | `selection/compute.py` (official run) |
 | `monthly.py` | once a month | `orchestrate/run.py --tier universe --run-type monthly_membership` (hysteresis lives in `universe/membership.py::compute_snapshot`, untouched) |
 
-`daily.py` never calls selection -- it only ever runs from `weekly.py` --
-so a blocked or delayed weekly run cannot stop daily monitoring, and a
-daily-stage failure (`scheduler/common.py::run_stage`, which never raises)
-cannot stop the remaining daily stages either.
+A daily-stage failure (`scheduler/common.py::run_stage`, which never
+raises) cannot stop the remaining daily stages.
 
 "Fires exactly once per trading week" is not enforced by `weekly.py` itself;
 it is enforced two layers down and would hold even if the trigger fired
 twice: `trading_calendar.latest_complete_week` refuses an incomplete week,
 and `research_candidates.candidate_id` is deterministic per week, so a
 re-run cannot duplicate it (`test_candidate_id_is_deterministic_so_a_rerun_cannot_duplicate`).
+
+### Concurrency: one shared lock, and weekly is chained after daily
+
+`scheduler/lock.py` provides one file-based lock (`data/scheduler.lock`) all
+three jobs acquire before touching the database. A blocked job retries
+briefly, then records a `status='failed'` `pipeline_runs` row with a
+`skipped: another Stockbot job is running` message (visible on `/health`)
+rather than either blocking indefinitely or writing concurrently -- this is
+what stops the `database is locked` failures a manual test run overlapping
+a live scheduled scan produced. A stale lock (crashed process) is reclaimed
+by file-mtime age, no OS process-liveness check needed.
+`pipeline/tests/test_scheduler_lock.py` proves the mutual exclusion and the
+stale-reclaim path.
+
+The lock alone isn't enough to guarantee weekly selection actually runs
+every week, though: `daily.py` has taken 30-60+ minutes on the full scaled
+universe, `weekly.py`'s own standalone trigger fires Saturday 07:30, and a
+60s-retry-then-skip policy on that trigger alone would genuinely skip an
+entire week if daily is still running that morning. So `daily.py` now
+chains `weekly.py` itself, right after daily finishes and releases the
+lock, **every day** -- not only Fridays/Saturdays. That's safe to do
+unconditionally: `weekly.py`'s own trading-week-completeness check already
+makes it a no-op on any day the week isn't over, and `candidate_id`'s
+determinism makes re-running an already-selected week a no-op too (both
+already relied on above). `weekly.py`'s standalone Saturday trigger still
+exists as a fallback (daily crashing before reaching the chain call), not
+the primary delivery path -- if it finds the lock held, skipping that one
+attempt is correct, because the chain is what actually guarantees delivery,
+whenever daily finishes. `pipeline/tests/test_scheduler_chain.py` proves
+the chain fires with the right arguments and that a chained failure never
+changes daily's own exit code.
 
 ### Logs
 
