@@ -4,3 +4,4 @@ pandas==2.3.3
 numpy==2.3.4
 python-dotenv==1.1.1
 pytest==8.4.2
+anthropic==0.121.0
