@@ -58,7 +58,7 @@ def test_a_failed_chained_weekly_does_not_raise(monkeypatch):
 
 def test_main_calls_run_daily_then_chains_weekly_by_default(monkeypatch):
     order = []
-    monkeypatch.setattr(dailymod, "run_daily", lambda db, today: order.append("daily") or 0)
+    monkeypatch.setattr(dailymod, "run_daily", lambda db, today, *a, **k: order.append("daily") or 0)
     monkeypatch.setattr(dailymod, "_chain_weekly", lambda db, today: order.append("weekly"))
 
     code = dailymod.main(["--db", "data/example.db", "--as-of", "2026-08-09"])
@@ -69,7 +69,7 @@ def test_main_calls_run_daily_then_chains_weekly_by_default(monkeypatch):
 
 def test_no_chain_weekly_flag_skips_the_chain(monkeypatch):
     order = []
-    monkeypatch.setattr(dailymod, "run_daily", lambda db, today: order.append("daily") or 0)
+    monkeypatch.setattr(dailymod, "run_daily", lambda db, today, *a, **k: order.append("daily") or 0)
     monkeypatch.setattr(dailymod, "_chain_weekly", lambda db, today: order.append("weekly"))
 
     dailymod.main(["--db", "data/example.db", "--as-of", "2026-08-09", "--no-chain-weekly"])

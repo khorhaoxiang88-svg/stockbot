@@ -39,6 +39,7 @@ import migrate  # noqa: E402
 from scheduler.common import (  # noqa: E402
     existing_log_dates,
     missed_run_dates,
+    reconcile_abandoned_runs,
     record_scheduler_run,
     run_stage,
     utc_today,
@@ -122,6 +123,12 @@ def run_weekly(db: str, today: str | None = None) -> int:
 def _run_weekly_locked(db: str, today: str) -> int:
     log = RunLog(JOB, today)
     conn = migrate.connect(Path(db))
+
+    corrected = reconcile_abandoned_runs(conn)
+    if corrected:
+        log.section("reconciled abandoned runs")
+        for run_id in corrected:
+            log.line(f"  {run_id}: was stuck 'running', corrected to 'failed'")
 
     missed_errors = _log_missed_runs(conn, log, date.fromisoformat(today))
 

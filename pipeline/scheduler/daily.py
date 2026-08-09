@@ -32,12 +32,14 @@ if str(PIPELINE_DIR) not in sys.path:
 import migrate  # noqa: E402
 from config_loader import load_config  # noqa: E402
 from scheduler.common import (  # noqa: E402
+    DEFAULT_TIMEOUT_SECONDS,
     LOG_DIR,
     REPO_ROOT,
     RunLog,
     existing_log_dates,
     latest_pool_version,
     missed_run_dates,
+    reconcile_abandoned_runs,
     record_scheduler_run,
     run_stage,
     utc_today,
@@ -53,6 +55,14 @@ ORCHESTRATE_STAGE_NAMES = {"prices": "prices", "form4": "form4", "xbrl": "xbrl",
 
 JOB = "daily"
 MISSED_RUN_PERIOD_DAYS = 1
+
+# The Aug 9 form4 run needed longer than the old blanket 3600s (1h) --
+# 469 of ~937 securities completed before the timeout killed it. Orchestrate
+# stages scale with the whole universe and legitimately need hours (README's
+# own S2 history: up to ~4h20m for a comparable batch); the non-orchestrate
+# stages (fundamentals/scoring/execution, one pass, not per-security) never
+# have, so they keep the shorter default rather than getting a blanket bump.
+DEFAULT_ORCHESTRATE_TIMEOUT_SECONDS = 6 * 3600
 
 
 def _stage_specs(pool: str | None, today: str, db: str) -> list[tuple[str, list[str]]]:
@@ -172,7 +182,7 @@ def _log_positions(conn, log: RunLog, today: str) -> None:
             log.line(f"  {r['position_id']} security={r['security_id']}")
 
 
-def run_daily(db: str, today: str | None = None) -> int:
+def run_daily(db: str, today: str | None = None, orchestrate_timeout: int = DEFAULT_ORCHESTRATE_TIMEOUT_SECONDS) -> int:
     today = today or utc_today()
     with scheduler_lock(JOB) as lock:
         if not lock.acquired:
@@ -184,13 +194,19 @@ def run_daily(db: str, today: str | None = None) -> int:
             conn.close()
             print(f"daily run {today}: SKIPPED, lock held by {lock.held_by}")
             return 2
-        return _run_daily_locked(db, today)
+        return _run_daily_locked(db, today, orchestrate_timeout)
 
 
-def _run_daily_locked(db: str, today: str) -> int:
+def _run_daily_locked(db: str, today: str, orchestrate_timeout: int = DEFAULT_ORCHESTRATE_TIMEOUT_SECONDS) -> int:
     log = RunLog(JOB, today)
     conn = migrate.connect(Path(db))
     cfg = load_config()
+
+    corrected = reconcile_abandoned_runs(conn)
+    if corrected:
+        log.section("reconciled abandoned runs")
+        for run_id in corrected:
+            log.line(f"  {run_id}: was stuck 'running', corrected to 'failed'")
 
     missed_errors = _log_missed_runs(conn, log, date.fromisoformat(today))
 
@@ -209,8 +225,26 @@ def _run_daily_locked(db: str, today: str) -> int:
         # actually finishes and its own run_id can be looked up (below).
         publish_for(conn, RunContext(scanner_state="running", current_stage=name))
 
+        db_stage_name = ORCHESTRATE_STAGE_NAMES.get(name)
+        stage_timeout = orchestrate_timeout if db_stage_name else DEFAULT_TIMEOUT_SECONDS
+
+        def _heartbeat(elapsed_seconds, _name=name, _db_stage=db_stage_name):
+            # Fires every ~60s WHILE the stage subprocess is still running --
+            # this is the actual intra-stage progress requirement; the
+            # publish_for calls immediately before/after the subprocess call
+            # are only stage-boundary announcements, not this.
+            run_id = None
+            if _db_stage:
+                row = conn.execute(
+                    "SELECT run_id FROM pipeline_runs WHERE stage = ? "
+                    "ORDER BY started_at DESC LIMIT 1",
+                    (f"orchestrate_{_db_stage}",),
+                ).fetchone()
+                run_id = row["run_id"] if row else None
+            publish_for(conn, RunContext(scanner_state="running", current_stage=_name, run_id=run_id))
+
         log.section(f"stage: {name}")
-        result = run_stage(name, args)
+        result = run_stage(name, args, timeout=stage_timeout, on_heartbeat=_heartbeat)
         stage_results[name] = result
         log.line(f"  ok={result.ok} returncode={result.returncode}")
         if result.error:
@@ -303,9 +337,15 @@ def main(argv: list[str] | None = None) -> int:
         "--no-chain-weekly", action="store_true",
         help="skip the automatic weekly-selection chain (for isolated/manual runs)",
     )
+    parser.add_argument(
+        "--orchestrate-timeout", type=int, default=DEFAULT_ORCHESTRATE_TIMEOUT_SECONDS,
+        help=f"per-stage timeout in seconds for the orchestrate tiers (prices/form4/xbrl/"
+             f"riskflags), which scale with the whole universe (default "
+             f"{DEFAULT_ORCHESTRATE_TIMEOUT_SECONDS}s = 6h)",
+    )
     args = parser.parse_args(argv)
     today = args.as_of or utc_today()
-    result = run_daily(args.db, today)
+    result = run_daily(args.db, today, args.orchestrate_timeout)
     if not args.no_chain_weekly:
         _chain_weekly(args.db, today)
     return result

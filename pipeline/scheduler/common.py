@@ -15,8 +15,10 @@ than inventing a fifth status value that would need a table rebuild to add.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -66,29 +68,104 @@ def _tail(text: str, lines: int = 25) -> str:
     return "\n".join(parts[-lines:])
 
 
-def run_stage(name: str, args: list[str], cwd: Path = REPO_ROOT) -> StageResult:
+DEFAULT_TIMEOUT_SECONDS = 3600
+HEARTBEAT_INTERVAL_SECONDS = 60
+
+
+def _kill_tree(pid: int) -> None:
+    """Kills a process AND every descendant it spawned -- plain proc.kill()
+    only kills the immediate child. The Aug 9 form4 run's abandoned
+    pipeline_runs row (never corrected to 'failed', stuck 'running' for
+    hours) is exactly the failure mode an incomplete kill produces: if a
+    grandchild survives, nothing ever finishes writing the closing row.
+
+    Windows-first (taskkill /T), since that's this project's actual runtime;
+    POSIX path (process-group kill) is a real fallback, not just cargo cult,
+    since pytest itself runs cross-platform.
+    """
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+        )
+    else:
+        import signal
+
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def run_stage(
+    name: str,
+    args: list[str],
+    cwd: Path = REPO_ROOT,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    on_heartbeat=None,
+) -> StageResult:
     """Run one pipeline CLI as a subprocess and ALWAYS return a StageResult --
     never raise. This is the isolation boundary: a scheduler loops over
     several of these and a failure in one (non-zero exit, or the subprocess
     could not even start) must not stop the loop from reaching the rest.
+
+    Popen + poll loop, not subprocess.run(timeout=...), so on_heartbeat can
+    fire periodically WHILE a slow stage is still running -- the Aug 9 fix
+    needed both a longer timeout AND a heartbeat during it, not just one.
+    A stdout/stderr tempfile (not PIPE) avoids the classic deadlock a long-
+    running process with a lot of output can hit against an unread pipe.
     """
     started = utc_now_iso()
+    stdout_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
+    stderr_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
     try:
-        proc = subprocess.run(
-            [sys.executable, *args],
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            timeout=3600,
-        )
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+        popen_kwargs = {"cwd": str(cwd), "stdout": stdout_file, "stderr": stderr_file, "text": True}
+        if sys.platform != "win32":
+            popen_kwargs["start_new_session"] = True  # own process group, for _kill_tree
+        else:
+            popen_kwargs["creationflags"] = creationflags
+
+        proc = subprocess.Popen([sys.executable, *args], **popen_kwargs)
+
+        elapsed = 0
+        while True:
+            returncode = proc.poll()
+            if returncode is not None:
+                break
+            if elapsed >= timeout:
+                _kill_tree(proc.pid)
+                stdout_file.seek(0)
+                stderr_file.seek(0)
+                return StageResult(
+                    name=name,
+                    ok=False,
+                    returncode=None,
+                    started_at=started,
+                    finished_at=utc_now_iso(),
+                    stdout_tail=_tail(stdout_file.read()),
+                    stderr_tail=_tail(stderr_file.read()),
+                    error=f"timed out after {timeout}s, process tree killed",
+                )
+            step = min(HEARTBEAT_INTERVAL_SECONDS, timeout - elapsed)
+            try:
+                proc.wait(timeout=step)
+            except subprocess.TimeoutExpired:
+                pass
+            elapsed += step
+            if proc.poll() is None and on_heartbeat is not None:
+                on_heartbeat(elapsed)
+
+        stdout_file.seek(0)
+        stderr_file.seek(0)
         return StageResult(
             name=name,
-            ok=proc.returncode == 0,
-            returncode=proc.returncode,
+            ok=returncode == 0,
+            returncode=returncode,
             started_at=started,
             finished_at=utc_now_iso(),
-            stdout_tail=_tail(proc.stdout),
-            stderr_tail=_tail(proc.stderr),
+            stdout_tail=_tail(stdout_file.read()),
+            stderr_tail=_tail(stderr_file.read()),
         )
     except Exception as exc:  # noqa: BLE001 -- isolation boundary, must not raise
         return StageResult(
@@ -99,6 +176,9 @@ def run_stage(name: str, args: list[str], cwd: Path = REPO_ROOT) -> StageResult:
             finished_at=utc_now_iso(),
             error=str(exc),
         )
+    finally:
+        stdout_file.close()
+        stderr_file.close()
 
 
 @dataclass
@@ -123,6 +203,52 @@ class RunLog:
         header = f"stockbot {self.job} run -- {self.key} -- written {utc_now_iso()}"
         out.write_text(header + "\n" + "\n".join(self.lines) + "\n", encoding="utf-8")
         return out
+
+
+ABANDONED_RUN_THRESHOLD_SECONDS = 8 * 3600  # generous above the 6h max stage timeout
+
+
+def reconcile_abandoned_runs(conn, threshold_seconds: int = ABANDONED_RUN_THRESHOLD_SECONDS) -> list[str]:
+    """Corrects pipeline_runs rows stuck at status='running' from a PRIOR
+    invocation whose parent process was killed externally (Task Scheduler
+    stop, OS shutdown, crash) before it could write its own closing UPDATE --
+    exactly what happened to the Aug 9 form4 run, which sat 'running' with
+    finished_at NULL for hours after the actual process had already died.
+
+    Called at the START of daily/weekly/monthly, before anything else, so a
+    stale row from last time never gets displayed (via /health or
+    publish_status) as though it were still live. Only rows older than
+    threshold_seconds are touched -- a genuinely-in-progress row from a
+    concurrent run (which the scheduler lock should already prevent, but
+    this is a second, independent safety net) is left alone.
+
+    Returns the list of run_ids corrected, for the caller's own log.
+    """
+    cutoff = utc_now_iso()
+    stale = conn.execute(
+        "SELECT run_id, stage, started_at FROM pipeline_runs WHERE status = 'running'"
+    ).fetchall()
+    corrected = []
+    for row in stale:
+        started = datetime.strptime(row["started_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        age_seconds = (datetime.now(timezone.utc) - started).total_seconds()
+        if age_seconds < threshold_seconds:
+            continue
+        conn.execute(
+            "UPDATE pipeline_runs SET status = 'failed', finished_at = ?, "
+            "errors_json = ? WHERE run_id = ?",
+            (
+                cutoff,
+                f'["abandoned: still \'running\' after {age_seconds / 3600:.1f}h, '
+                f'parent process was terminated externally before it could record '
+                f'its own result"]',
+                row["run_id"],
+            ),
+        )
+        corrected.append(row["run_id"])
+    if corrected:
+        conn.commit()
+    return corrected
 
 
 def record_scheduler_run(
