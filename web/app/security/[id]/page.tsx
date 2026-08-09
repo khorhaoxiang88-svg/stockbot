@@ -20,6 +20,8 @@ import {
 import { PriceChart, type ChartMarker } from "@/components/price-chart";
 import { InteractivePriceChart } from "@/components/interactive-price-chart";
 import { RiskPanel } from "@/components/risk-panel";
+import { NewsLedgerPanel } from "@/components/news-ledger-panel";
+import { AnalystConsensus } from "@/components/analyst-consensus";
 import { ScoreBreakdown } from "@/components/score-breakdown";
 import {
   adjustedSeries,
@@ -39,6 +41,7 @@ import {
   getInsiderTableOne,
   getInsiderTableTwo,
   getKnowledgeStates,
+  getLatestAnalystSnapshot,
   getLatestFundamentals,
   getListingsFor,
   getPriceRevisions,
@@ -46,6 +49,8 @@ import {
   getProvenance,
   getRankedCount,
   getRestatements,
+  getNewsEventsFor,
+  getNewsFilingsFor,
   getRiskAsOf,
   getRiskFlags,
   getScore,
@@ -117,6 +122,7 @@ export default async function SecurityPage({
     row.classification_confidence,
   );
 
+  const analystSnapshot = getLatestAnalystSnapshot(securityId);
   const prices = getPrices(securityId);
   const actions = getCorporateActions(securityId);
   const revisions = getPriceRevisions(securityId);
@@ -247,6 +253,8 @@ export default async function SecurityPage({
 
   const riskFlags = getRiskFlags(securityId);
   const riskAsOf = getRiskAsOf(securityId);
+  const newsFilings = getNewsFilingsFor(securityId);
+  const newsEvents = getNewsEventsFor(securityId);
 
   const score = getScore(securityId);
   const scoreExplanation = parseExplanation(score.row?.explanation_json ?? null);
@@ -333,6 +341,11 @@ export default async function SecurityPage({
           <p>The bot has fewer than two stored price days for this stock.</p>
         </div>
       )}
+
+      <AnalystConsensus
+        snapshot={analystSnapshot.row}
+        currentPrice={adjusted.length ? adjusted[adjusted.length - 1].close : null}
+      />
 
       <details className="security-research-details">
         <summary>
@@ -1326,6 +1339,8 @@ export default async function SecurityPage({
       )}
 
       <RiskPanel flags={riskFlags.rows} asOfDate={riskAsOf} />
+
+      <NewsLedgerPanel filings={newsFilings.rows} events={newsEvents.rows} />
 
       <section className="mb-14 space-y-4">
         <h2>Universe membership</h2>
