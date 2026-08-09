@@ -549,3 +549,23 @@ main:not(.dashboard-shell) > section > h2 { color: oklch(.84 .1 247); }
     color: transparent;
   }
 }
+
+.analyst-consensus { padding: 1.4rem 1.6rem; border: 1px solid var(--border); border-radius: 1rem; background: color-mix(in oklab, var(--card) 90%, transparent); }
+.analyst-consensus-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.analyst-rating-bar { display: flex; height: 8px; margin: 1.1rem 0 .6rem; overflow: hidden; border-radius: 99px; background: var(--muted); }
+.analyst-rating-bar i { display: block; height: 100%; background: var(--primary); opacity: .45; }
+.analyst-rating-bar i:nth-child(1) { opacity: 1; }
+.analyst-rating-bar i:nth-child(2) { opacity: .78; }
+.analyst-rating-bar i:nth-child(3) { opacity: .5; }
+.analyst-rating-bar i:nth-child(4) { opacity: .3; }
+.analyst-rating-bar i:nth-child(5) { opacity: .16; }
+.analyst-rating-legend { display: flex; flex-wrap: wrap; gap: .5rem 1.2rem; margin-bottom: 1.2rem; color: var(--muted-foreground); font-size: .78rem; }
+.analyst-rating-legend b { color: var(--foreground); font-weight: 700; }
+.analyst-target-range { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.analyst-target-labels { display: flex; justify-content: space-between; margin-bottom: .5rem; color: var(--muted-foreground); font-size: .78rem; font: 700 .75rem var(--app-font-mono); }
+.analyst-target-track { position: relative; height: 6px; border-radius: 99px; background: linear-gradient(90deg, oklch(.6 .16 25 / .35), oklch(.75 .12 76 / .35), oklch(.72 .17 158 / .35)); }
+.analyst-target-mean, .analyst-target-current { position: absolute; top: 50%; width: 2px; height: 16px; transform: translate(-50%, -50%); }
+.analyst-target-mean { background: var(--foreground); }
+.analyst-target-current { width: 10px; height: 10px; border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 30%, transparent); }
+.analyst-target-current-label { margin-top: .6rem; color: var(--muted-foreground); font-size: .78rem; }
+.analyst-consensus-foot { margin-top: 1rem; color: var(--muted-foreground); font-size: .7rem; }

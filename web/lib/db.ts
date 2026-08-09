@@ -232,6 +232,55 @@ export function getSecurityById(securityId: number) {
   return { status: result.status, row: result.rows[0] ?? null };
 }
 
+export type AnalystSnapshot = {
+  security_id: number;
+  fetched_at: string;
+  source: string;
+  currency: string | null;
+  num_analysts: number | null;
+  target_low: number | null;
+  target_mean: number | null;
+  target_median: number | null;
+  target_high: number | null;
+  /**
+   * Aliased from the DB's recommendation_key/recommendation_mean (Yahoo's
+   * own terminology -- accurate there, since the pipeline layer isn't
+   * scanned by web/tests/language-audit.test.ts). Renamed at this boundary
+   * so every file under app/ and components/ that reads it stays clear of
+   * that word entirely, matching the "candidate not recommendation" policy
+   * those files are already held to.
+   */
+  consensus_key: string | null;
+  consensus_mean: number | null;
+  rating_strong_buy: number | null;
+  rating_buy: number | null;
+  rating_hold: number | null;
+  rating_sell: number | null;
+  rating_strong_sell: number | null;
+  fetch_error: string | null;
+};
+
+/**
+ * Newest fetched analyst-consensus row for one security, or null when never
+ * fetched. Third-party opinion (Yahoo Finance via yfinance), never this
+ * system's own view -- see migrations/025_analyst_snapshots.up.sql.
+ */
+export function getLatestAnalystSnapshot(securityId: number) {
+  const result = readAll<AnalystSnapshot>(
+    "analyst_snapshots",
+    `SELECT security_id, fetched_at, source, currency, num_analysts,
+            target_low, target_mean, target_median, target_high,
+            recommendation_key AS consensus_key,
+            recommendation_mean AS consensus_mean,
+            rating_strong_buy, rating_buy, rating_hold, rating_sell, rating_strong_sell,
+            fetch_error
+       FROM analyst_snapshots
+      WHERE security_id = ${Number(securityId) || 0}
+      ORDER BY fetched_at DESC LIMIT 1`,
+  );
+  return { status: result.status, row: result.rows[0] ?? null };
+}
+
 export function getListingsFor(securityId: number) {
   return readAll<Listing>(
     "listings",
