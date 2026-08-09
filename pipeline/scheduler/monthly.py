@@ -33,6 +33,7 @@ from scheduler.common import (  # noqa: E402
     RunLog,
 )
 from scheduler.lock import scheduler_lock  # noqa: E402
+from scheduler.publish_status import RunContext, publish_for  # noqa: E402
 
 JOB = "monthly"
 MISSED_RUN_PERIOD_DAYS = 30
@@ -78,6 +79,8 @@ def _run_monthly_locked(db: str, today: str) -> int:
     log.section("pool")
     log.line(f"  {pool or '(none loaded -- falling back to fixture securities)'}")
 
+    publish_for(conn, RunContext(scanner_state="running", current_stage="universe"))
+
     log.section("stage: universe membership")
     args = ["pipeline/orchestrate/run.py", "--tier", "universe",
             "--run-type", "monthly_membership", "--db", db]
@@ -111,6 +114,9 @@ def _run_monthly_locked(db: str, today: str) -> int:
     record_scheduler_run(
         conn, JOB, status, snapshot["security_count"] if snapshot else 0, errors
     )
+
+    scanner_state = {"success": "succeeded", "partial": "partial", "failed": "failed"}[status]
+    publish_for(conn, RunContext(scanner_state=scanner_state, current_stage=None), force=True)
 
     conn.close()
     print(f"monthly run {today}: status={status} log={log_path}")

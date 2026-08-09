@@ -43,7 +43,13 @@ from scheduler.common import (  # noqa: E402
     utc_today,
 )
 from scheduler.lock import scheduler_lock  # noqa: E402
+from scheduler.publish_status import RunContext, publish_for  # noqa: E402
 from selection import freshness as FR  # noqa: E402
+
+# daily.py's own stage names -> the DB's orchestrate stage name, for the
+# per-item progress lookup in publish_status. Stages not listed here have no
+# per-item concept (fundamentals/scoring/execution run once, not per-security).
+ORCHESTRATE_STAGE_NAMES = {"prices": "prices", "form4": "form4", "xbrl": "xbrl", "riskflags": "riskflags"}
 
 JOB = "daily"
 MISSED_RUN_PERIOD_DAYS = 1
@@ -192,8 +198,17 @@ def _run_daily_locked(db: str, today: str) -> int:
     log.section("pool")
     log.line(f"  {pool or '(none loaded -- falling back to fixture securities)'}")
 
+    publish_for(conn, RunContext(scanner_state="running", current_stage=None))
+
     stage_results = {}
     for name, args in _stage_specs(pool, today, db):
+        # Announced before the stage's subprocess runs -- daily.py's own
+        # loop is synchronous per stage, so this is stage-boundary
+        # granularity, not sub-second intra-stage progress. Documented
+        # rather than oversold: progress numbers only advance once a stage
+        # actually finishes and its own run_id can be looked up (below).
+        publish_for(conn, RunContext(scanner_state="running", current_stage=name))
+
         log.section(f"stage: {name}")
         result = run_stage(name, args)
         stage_results[name] = result
@@ -207,6 +222,17 @@ def _run_daily_locked(db: str, today: str) -> int:
             log.line("  --- stderr (tail) ---")
             log.line(result.stderr_tail)
 
+        db_stage = ORCHESTRATE_STAGE_NAMES.get(name)
+        run_id = None
+        if db_stage:
+            row = conn.execute(
+                "SELECT run_id FROM pipeline_runs WHERE stage = ? "
+                "ORDER BY started_at DESC LIMIT 1",
+                (f"orchestrate_{db_stage}",),
+            ).fetchone()
+            run_id = row["run_id"] if row else None
+        publish_for(conn, RunContext(scanner_state="running", current_stage=name, run_id=run_id))
+
     _log_data_health(conn, cfg, log, today)
     severe_count = _log_severe_risk_flags(conn, log, today)
     _log_positions(conn, log, today)
@@ -219,6 +245,13 @@ def _run_daily_locked(db: str, today: str) -> int:
     )
     errors = missed_errors + [f"stage failed: {name}" for name in failed_stages]
     record_scheduler_run(conn, JOB, status, severe_count, errors)
+
+    # 'partial' is its own scanner_state (not one of the 4 named in the
+    # original spec, but real -- pipeline_runs.status already distinguishes
+    # it, and the public site's amber "stale/partial" color rule expects it
+    # to exist), never flattened into a misleadingly-clean "succeeded".
+    scanner_state = {"success": "succeeded", "partial": "partial", "failed": "failed"}[status]
+    publish_for(conn, RunContext(scanner_state=scanner_state, current_stage=None), force=True)
 
     conn.close()
     print(f"daily run {today}: status={status} log={log_path}")

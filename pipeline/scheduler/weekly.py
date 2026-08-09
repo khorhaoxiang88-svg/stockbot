@@ -45,6 +45,7 @@ from scheduler.common import (  # noqa: E402
     RunLog,
 )
 from scheduler.lock import scheduler_lock  # noqa: E402
+from scheduler.publish_status import RunContext, publish_for  # noqa: E402
 
 JOB = "weekly"
 MISSED_RUN_PERIOD_DAYS = 7
@@ -124,6 +125,8 @@ def _run_weekly_locked(db: str, today: str) -> int:
 
     missed_errors = _log_missed_runs(conn, log, date.fromisoformat(today))
 
+    publish_for(conn, RunContext(scanner_state="running", current_stage="selection"))
+
     log.section("stage: selection")
     result = run_stage(
         "selection",
@@ -146,6 +149,9 @@ def _run_weekly_locked(db: str, today: str) -> int:
     )
     errors = missed_errors + ([] if result.ok else ["selection stage failed"])
     record_scheduler_run(conn, JOB, status, written, errors)
+
+    scanner_state = {"success": "succeeded", "partial": "partial", "failed": "failed"}[status]
+    publish_for(conn, RunContext(scanner_state=scanner_state, current_stage=None), force=True)
 
     conn.close()
     print(f"weekly run {today}: status={status} candidates={written} "
