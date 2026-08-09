@@ -136,6 +136,7 @@ def test_frozen_config_lock_rejects_delete(conn):
 # --------------------------------------------------- against the real lock
 
 
+@pytest.mark.live_db
 def test_the_real_locked_config_hash_matches_the_file_on_disk():
     """The lock inserted for this session's real freeze (strategy_version=2,
     composite_threshold=55) must still match config.frozen.json as it

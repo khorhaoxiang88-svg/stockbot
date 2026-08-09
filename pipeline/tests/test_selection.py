@@ -638,6 +638,7 @@ def _database() -> sqlite3.Connection:
     return conn
 
 
+@pytest.mark.live_db
 def test_both_books_start_at_the_configured_nav_with_no_open_positions():
     conn = _database()
     try:
@@ -653,6 +654,7 @@ def test_both_books_start_at_the_configured_nav_with_no_open_positions():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_research_candidates_is_append_only():
     conn = _database()
     try:
@@ -678,6 +680,7 @@ def test_research_candidates_is_append_only():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_paper_positions_table_exists_and_superseded_the_f10_positions_table():
     """F11 (migration 013) replaced `positions` with the real `paper_positions`.
 
@@ -704,6 +707,7 @@ def test_paper_positions_table_exists_and_superseded_the_f10_positions_table():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_a_stale_source_blocked_every_candidate_in_the_recorded_run():
     conn = _database()
     try:

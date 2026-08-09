@@ -448,6 +448,7 @@ def _database() -> sqlite3.Connection:
     return conn
 
 
+@pytest.mark.live_db
 def test_every_non_unknown_flag_has_a_resolvable_source():
     """Resolvable means it points at a row that exists, not merely non-null."""
     conn = _database()
@@ -490,6 +491,7 @@ def test_every_non_unknown_flag_has_a_resolvable_source():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_insider_selling_is_never_bearish_in_the_database():
     conn = _database()
     try:
@@ -503,6 +505,7 @@ def test_insider_selling_is_never_bearish_in_the_database():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_unknowns_carry_the_unknown_severity_and_a_reason():
     conn = _database()
     try:
@@ -518,6 +521,7 @@ def test_unknowns_carry_the_unknown_severity_and_a_reason():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_every_fixture_security_has_a_risk_row_even_when_it_cannot_be_scored():
     conn = _database()
     try:
@@ -533,6 +537,7 @@ def test_every_fixture_security_has_a_risk_row_even_when_it_cannot_be_scored():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_a_clean_check_and_an_unknown_are_stored_differently():
     conn = _database()
     try:

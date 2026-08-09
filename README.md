@@ -188,10 +188,22 @@ Roll back everything:
 pipeline/.venv/Scripts/python.exe pipeline/migrate.py down --to 000
 ```
 
-Run the Python tests:
+Run the Python tests (isolated only -- every test builds its own temp
+database from the migrations, never touches `data/stockbot.db`; this is
+what CI runs):
 
 ```bash
-pipeline/.venv/Scripts/python.exe -m pytest pipeline/tests -q
+pipeline/.venv/Scripts/python.exe -m pytest pipeline/tests -q -m "not live_db"
+```
+
+Run the live-database audit separately, against a real checkout with a real
+`data/stockbot.db` (never in CI, which has no production database to check;
+never concurrently with a scheduled pipeline run -- see
+[S6: unattended scheduling](#s6-unattended-scheduling-pipelinescheduler) for
+the cross-process lock both share):
+
+```bash
+pipeline/.venv/Scripts/python.exe -m pytest pipeline/tests -q -m live_db
 ```
 
 Run the web tests:

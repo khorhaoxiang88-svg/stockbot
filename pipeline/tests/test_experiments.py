@@ -318,6 +318,7 @@ def test_open_experiment_refuses_when_one_is_already_active(conn):
 # ------------------------------------------------------------ against the real lock
 
 
+@pytest.mark.live_db
 def test_the_real_experiment_if_any_matches_the_current_frozen_config_hash():
     """If an experiment has actually been opened for real, its config_hash
     must still be the hash config.frozen.json produces today -- otherwise the

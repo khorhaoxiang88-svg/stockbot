@@ -42,6 +42,7 @@ from scheduler.common import (  # noqa: E402
     run_stage,
     utc_today,
 )
+from scheduler.lock import scheduler_lock  # noqa: E402
 from selection import freshness as FR  # noqa: E402
 
 JOB = "daily"
@@ -167,6 +168,20 @@ def _log_positions(conn, log: RunLog, today: str) -> None:
 
 def run_daily(db: str, today: str | None = None) -> int:
     today = today or utc_today()
+    with scheduler_lock(JOB) as lock:
+        if not lock.acquired:
+            conn = migrate.connect(Path(db))
+            record_scheduler_run(
+                conn, JOB, "failed", 0,
+                [f"skipped: another Stockbot job is running (lock held by {lock.held_by})"],
+            )
+            conn.close()
+            print(f"daily run {today}: SKIPPED, lock held by {lock.held_by}")
+            return 2
+        return _run_daily_locked(db, today)
+
+
+def _run_daily_locked(db: str, today: str) -> int:
     log = RunLog(JOB, today)
     conn = migrate.connect(Path(db))
     cfg = load_config()

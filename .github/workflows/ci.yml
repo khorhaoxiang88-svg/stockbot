@@ -17,10 +17,8 @@ jobs:
           python-version: "3.12"
       - name: Install pipeline dependencies
         run: pip install -r pipeline/requirements.txt
-      - name: Run migrations against a fresh test database
-        run: python pipeline/migrate.py up --db data/ci-test.db
-      - name: pytest
-        run: python -m pytest pipeline/tests -q
+      - name: pytest (isolated tests only -- CI has no production database)
+        run: python -m pytest pipeline/tests -q -m "not live_db"
 
   web-tests:
     name: Web (vitest, eslint, build)

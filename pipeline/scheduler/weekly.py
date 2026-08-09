@@ -35,6 +35,7 @@ from scheduler.common import (  # noqa: E402
     utc_today,
     RunLog,
 )
+from scheduler.lock import scheduler_lock  # noqa: E402
 
 JOB = "weekly"
 MISSED_RUN_PERIOD_DAYS = 7
@@ -95,6 +96,20 @@ def _log_outcome(conn, log: RunLog) -> tuple[int, bool]:
 
 def run_weekly(db: str, today: str | None = None) -> int:
     today = today or utc_today()
+    with scheduler_lock(JOB) as lock:
+        if not lock.acquired:
+            conn = migrate.connect(Path(db))
+            record_scheduler_run(
+                conn, JOB, "failed", 0,
+                [f"skipped: another Stockbot job is running (lock held by {lock.held_by})"],
+            )
+            conn.close()
+            print(f"weekly run {today}: SKIPPED, lock held by {lock.held_by}")
+            return 2
+        return _run_weekly_locked(db, today)
+
+
+def _run_weekly_locked(db: str, today: str) -> int:
     log = RunLog(JOB, today)
     conn = migrate.connect(Path(db))
 

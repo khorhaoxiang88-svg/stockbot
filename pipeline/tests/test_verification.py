@@ -41,6 +41,7 @@ CFG = load_config()
 # ------------------------------------------------------------------- check 1
 
 
+@pytest.mark.live_db
 def test_check_1_passes_against_the_real_database():
     conn = _database()
     try:
@@ -51,6 +52,7 @@ def test_check_1_passes_against_the_real_database():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_check_1_fails_when_a_stored_metric_is_corrupted():
     conn = _database()
     try:
@@ -80,6 +82,7 @@ def test_check_1_fails_when_a_stored_metric_is_corrupted():
 # ------------------------------------------------------------------- check 2
 
 
+@pytest.mark.live_db
 def test_check_2_passes_against_the_real_database():
     conn = _database()
     try:
@@ -89,6 +92,7 @@ def test_check_2_passes_against_the_real_database():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_check_2_fails_when_a_security_is_marked_unknown():
     conn = _database()
     try:
@@ -123,6 +127,7 @@ def test_check_3_passes_a_synthetic_vendor_correction():
 # ------------------------------------------------------------------- check 4
 
 
+@pytest.mark.live_db
 def test_check_4_passes_against_the_real_database():
     conn = _database()
     try:
@@ -136,6 +141,7 @@ def test_check_4_passes_against_the_real_database():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_check_4_cannot_corrupt_dilution_scores_because_the_db_check_refuses_it():
     """dilution_signals ties dilution_score to d1..d4 with its own CHECK, so an
     inconsistent row can never exist to corrupt in the first place -- a
@@ -160,6 +166,7 @@ def test_check_4_cannot_corrupt_dilution_scores_because_the_db_check_refuses_it(
         conn.close()
 
 
+@pytest.mark.live_db
 def test_check_4_fails_when_a_piotroski_signal_is_corrupted():
     """The Piotroski half of check 4 has no DB CHECK behind it (a signal is a
     plain 0/1 column), so this is the fault injection that actually exercises
@@ -214,6 +221,7 @@ def test_check_4_fails_when_a_piotroski_signal_is_corrupted():
 # ------------------------------------------------------------------- check 5
 
 
+@pytest.mark.live_db
 def test_check_5_is_pending_with_zero_verifications_recorded():
     conn = _database()
     try:
@@ -226,6 +234,7 @@ def test_check_5_is_pending_with_zero_verifications_recorded():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_check_5_fails_on_a_recorded_mismatch_even_with_enough_volume():
     conn = _database()
     try:
@@ -254,6 +263,7 @@ def test_check_5_fails_on_a_recorded_mismatch_even_with_enough_volume():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_check_5_passes_once_enough_real_verifications_exist():
     conn = _database()
     try:
@@ -288,6 +298,7 @@ def test_check_6_passes_a_synthetic_split_dividend_and_delisting():
 # ------------------------------------------------------------------- check 7
 
 
+@pytest.mark.live_db
 def test_check_7_passes_against_the_real_database():
     conn = _database()
     try:
@@ -299,6 +310,7 @@ def test_check_7_passes_against_the_real_database():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_check_7_cannot_corrupt_composite_alone_because_the_db_check_refuses_it():
     """scores ties composite_score to its own components with a CHECK, so a
     row where they disagree can never exist to begin with -- proving that
@@ -325,6 +337,7 @@ def test_check_7_cannot_corrupt_composite_alone_because_the_db_check_refuses_it(
         conn.close()
 
 
+@pytest.mark.live_db
 def test_check_7_fails_when_the_explanation_json_disagrees_with_itself():
     """The DB CHECK only sees the top-level columns; it has no idea whether
     explanation_json's own submetric contributions actually sum to what it
@@ -367,6 +380,7 @@ def test_check_7_fails_when_the_explanation_json_disagrees_with_itself():
 # ------------------------------------------------------------------- check 8
 
 
+@pytest.mark.live_db
 def test_check_8_passes_against_the_real_database():
     conn = _database()
     try:
@@ -378,6 +392,7 @@ def test_check_8_passes_against_the_real_database():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_check_8_fails_when_a_source_accession_is_corrupted():
     conn = _database()
     try:
@@ -405,6 +420,7 @@ def test_check_8_fails_when_a_source_accession_is_corrupted():
 # ------------------------------------------------------------------- check 9
 
 
+@pytest.mark.live_db
 def test_check_9_passes_against_the_real_database():
     conn = _database()
     try:
@@ -414,6 +430,7 @@ def test_check_9_passes_against_the_real_database():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_check_9_fails_when_a_never_zero_metric_is_set_to_zero():
     conn = _database()
     try:
@@ -437,6 +454,7 @@ def test_check_9_fails_when_a_never_zero_metric_is_set_to_zero():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_check_9_fails_on_an_unknown_severity_mismatch():
     conn = _database()
     try:
@@ -462,6 +480,7 @@ def test_check_9_fails_on_an_unknown_severity_mismatch():
 # ------------------------------------------------------------------ check 10
 
 
+@pytest.mark.live_db
 def test_check_10_passes_against_the_real_database():
     conn = _database()
     try:
@@ -472,6 +491,7 @@ def test_check_10_passes_against_the_real_database():
         conn.close()
 
 
+@pytest.mark.live_db
 def test_check_10_fails_when_books_table_is_missing_a_horizon():
     conn = _database()
     try:
@@ -487,6 +507,7 @@ def test_check_10_fails_when_books_table_is_missing_a_horizon():
 # ------------------------------------------------------------- the orchestrator
 
 
+@pytest.mark.live_db
 def test_evidence_json_is_always_valid_json_for_every_check():
     """The /health page parses evidence_json directly; a check that produces
     unserialisable evidence would break the page, not just the report."""
