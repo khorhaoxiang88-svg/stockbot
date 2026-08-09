@@ -13,6 +13,15 @@ week" is enforced two layers down, not by this script:
 
 This script's only added job is logging the outcome (published vs. blocked
 by a stale required source) and missed-run detection.
+
+Primarily invoked by daily.py's chain (see daily.py's _chain_weekly), right
+after each day's daily run finishes -- not only by this script's own
+standalone Saturday 07:30 scheduled trigger, which now serves as a fallback
+in case the chain never ran (e.g. daily crashed before reaching it). Both
+paths acquire the same shared scheduler_lock, so if this runs while daily
+still holds it, it retries briefly then records a skip rather than blocking
+or running concurrently -- safe, because the chain call is what actually
+guarantees delivery, whenever daily finishes, not this trigger.
 """
 
 from __future__ import annotations

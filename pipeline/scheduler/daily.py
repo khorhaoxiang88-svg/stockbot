@@ -227,12 +227,55 @@ def _run_daily_locked(db: str, today: str) -> int:
     return 1 if failed_stages else 0
 
 
+def _chain_weekly(db: str, today: str) -> None:
+    """Attempt weekly selection right after daily finishes, lock released.
+
+    Unconditional, every day -- not just Fridays/Saturdays. weekly.py's own
+    trading-week-completeness check (SELECTION-RULE-1.1) already makes this
+    a safe no-op on any day the week isn't actually over, same as running it
+    by hand early would be (README: "running this a day early is a no-op,
+    not an early selection"), and candidate_id's determinism makes re-running
+    an already-selected week a no-op too. Reusing those existing guards is
+    safer than daily.py re-deriving its own "is today the right day" logic.
+
+    This is the PRIMARY path weekly runs through now. Its own standalone
+    Saturday 07:30 scheduled trigger still exists as a fallback (in case a
+    daily run never reaches this line -- crash, host powered off) but no
+    longer needs to be the only path: if daily runs long into Saturday and
+    that trigger finds the lock still held, it correctly records a skip and
+    moves on -- because this chain call is what actually delivers the
+    selection run, whenever daily finishes, not whichever day that lands on.
+
+    A weekly failure here never changes daily's own exit code -- same
+    per-stage isolation principle run_stage already applies within a single
+    scheduler run, one level up.
+    """
+    print(f"chaining weekly selection after daily ({today})...")
+    result = run_stage(
+        "chained_weekly",
+        ["pipeline/scheduler/weekly.py", "--db", db, "--as-of", today],
+    )
+    print(f"  chained weekly: ok={result.ok} returncode={result.returncode}")
+    if result.stdout_tail:
+        print(result.stdout_tail)
+    if not result.ok and result.stderr_tail:
+        print(result.stderr_tail)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="S6 daily scheduled run")
     parser.add_argument("--db", default=str(migrate.DEFAULT_DB_PATH))
     parser.add_argument("--as-of", default=None, help="defaults to today (UTC)")
+    parser.add_argument(
+        "--no-chain-weekly", action="store_true",
+        help="skip the automatic weekly-selection chain (for isolated/manual runs)",
+    )
     args = parser.parse_args(argv)
-    return run_daily(args.db, args.as_of)
+    today = args.as_of or utc_today()
+    result = run_daily(args.db, today)
+    if not args.no_chain_weekly:
+        _chain_weekly(args.db, today)
+    return result
 
 
 if __name__ == "__main__":
