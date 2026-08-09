@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-05T09:10:00Z",
+  "scanner_state": "succeeded",
+  "current_stage": null,
+  "progress": null,
+  "last_activity_at": "2026-08-05T09:10:00Z",
+  "last_success_at": "2026-08-05T09:10:00Z",
+  "latest_score_date": "2026-08-05",
+  "ranked_count": 90,
+  "latest_selection_status": "published",
+  "selected_count": 2,
+  "next_scheduled_run": "2026-08-06T23:00:00Z"
+}

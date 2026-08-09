@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 
+import { SystemCheckPanel } from "./SystemCheckPanel";
+
 type View = "overview" | "rankings" | "picks" | "runs";
 type Stock = {
   rank: number;
@@ -105,7 +107,7 @@ export default function Home() {
         ) : view === "overview" ? (
           <>
             <section className="hero"><div><p className="kicker">Live stock research</p><h1>Your stockbot,<br />without the noise.</h1><p>Rankings, weekly decisions and pipeline activity in short, clear cards.</p><div className="hero-actions"><button onClick={() => navigate("rankings")}>View rankings</button><button onClick={() => navigate("picks")}>See weekly picks</button></div></div><aside><span>Experiment</span><strong>LIVE</strong><dl><div><dt>ID</dt><dd>exp-d59006eb199b</dd></div><div><dt>Strategy</dt><dd>v2</dd></div><div><dt>Selected</dt><dd>0</dd></div></dl></aside></section>
-            <section className="metric-grid"><article><span>Universe evaluated</span><strong>937</strong><small>367 included</small></article><article><span>Ranked stocks</span><strong>97</strong><small>Aug 3 snapshot</small></article><article><span>Published candidates</span><strong>0</strong><small>valid bot result</small></article><article><span>Scanner</span><strong>Idle</strong><small>waiting for schedule</small></article></section>
+            <section className="metric-grid"><article><span>Universe evaluated</span><strong>937</strong><small>367 included</small></article><article><span>Ranked stocks</span><strong>97</strong><small>Aug 3 snapshot</small></article><article><span>Published candidates</span><strong>0</strong><small>valid bot result</small></article><SystemCheckPanel /></section>
             <section className="section-head"><div><p className="kicker">Latest deterministic ranking</p><h2>Top ranked stocks</h2></div><button onClick={() => navigate("rankings")}>View all →</button></section>
             <section className="stock-grid">{STOCKS.slice(0, 8).map(stock => <StockCard stock={stock} open={setSelected} key={stock.symbol} />)}</section>
           </>

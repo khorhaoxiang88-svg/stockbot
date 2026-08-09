@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-09T11:58:00Z",
+  "scanner_state": "running",
+  "current_stage": "form4",
+  "progress": {"completed": 210, "total": 367},
+  "last_activity_at": "2026-08-09T11:58:00Z",
+  "last_success_at": "2026-08-08T08:15:00Z",
+  "latest_score_date": "2026-08-03",
+  "ranked_count": 97,
+  "latest_selection_status": "no_run_yet",
+  "selected_count": 0,
+  "next_scheduled_run": "2026-08-10T23:00:00Z"
+}
