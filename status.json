@@ -1,14 +1,14 @@
 {
-  "current_stage": "form4",
-  "generated_at": "2026-08-09T07:36:59Z",
-  "last_activity_at": "2026-08-09T07:36:59Z",
+  "current_stage": null,
+  "generated_at": "2026-08-09T07:39:38Z",
+  "last_activity_at": "2026-08-09T07:39:38Z",
   "last_success_at": null,
   "latest_score_date": "2026-08-03",
   "latest_selection_status": "zero_candidates",
   "next_scheduled_run": "2026-08-09T23:00:00Z",
   "progress": null,
   "ranked_count": 97,
-  "scanner_state": "running",
+  "scanner_state": "succeeded",
   "schema_version": 1,
   "selected_count": 0
 }
