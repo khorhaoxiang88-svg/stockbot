@@ -1,7 +1,7 @@
 {
-  "current_stage": null,
-  "generated_at": "2026-08-09T11:21:54Z",
-  "last_activity_at": "2026-08-09T11:21:54Z",
+  "current_stage": "prices",
+  "generated_at": "2026-08-09T11:22:14Z",
+  "last_activity_at": "2026-08-09T11:22:14Z",
   "last_success_at": null,
   "latest_score_date": "2026-08-03",
   "latest_selection_status": "zero_candidates",
