@@ -42,3 +42,23 @@ jobs:
       - name: next build
         working-directory: web
         run: npm run build
+
+  public-site-tests:
+    name: Public site (eslint, build, node --test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: public-site/package-lock.json
+      - name: Install public-site dependencies
+        working-directory: public-site
+        run: npm ci
+      - name: eslint
+        working-directory: public-site
+        run: npm run lint
+      - name: build + test
+        working-directory: public-site
+        run: npm test
