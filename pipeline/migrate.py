@@ -103,7 +103,13 @@ def connect(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     """Open the database, create the folder if needed, and ensure the ledger table."""
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    # timeout=30 (Python's default is 5s): the Aug 9 resume run hit
+    # "database is locked" twice in a row from ordinary brief contention
+    # (a child orchestrate process's file lock not yet released, a
+    # concurrent read) -- 30s rides that out without masking a genuine
+    # deadlock for long. Every pipeline script shares this one connect(),
+    # so this is the actual root-cause fix, not a per-call-site patch.
+    conn = sqlite3.connect(db_path, timeout=30.0)
     conn.isolation_level = None  # we manage BEGIN/COMMIT ourselves
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")

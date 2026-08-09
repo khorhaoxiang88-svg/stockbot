@@ -65,6 +65,28 @@ MISSED_RUN_PERIOD_DAYS = 1
 DEFAULT_ORCHESTRATE_TIMEOUT_SECONDS = 6 * 3600
 
 
+def _lookup_orchestrate_run_id(conn, db_stage: str | None) -> str | None:
+    """Newest pipeline_runs.run_id for an orchestrate stage, or None --
+    never raises. A second real 'database is locked' crash (this time from
+    this exact lookup, immediately after a stage subprocess exits and
+    before the OS has necessarily released its file lock) confirmed this
+    needs the same never-crash treatment publish_for already got: this is
+    reporting metadata, not the actual pipeline work, and must never be
+    able to take the real run down.
+    """
+    if not db_stage:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT run_id FROM pipeline_runs WHERE stage = ? "
+            "ORDER BY started_at DESC LIMIT 1",
+            (f"orchestrate_{db_stage}",),
+        ).fetchone()
+        return row["run_id"] if row else None
+    except Exception:  # noqa: BLE001 -- isolation boundary, must not raise
+        return None
+
+
 def _stage_specs(pool: str | None, today: str, db: str) -> list[tuple[str, list[str]]]:
     common = ["--db", db]
     pool_args = ["--pool", pool] if pool else []
@@ -233,14 +255,7 @@ def _run_daily_locked(db: str, today: str, orchestrate_timeout: int = DEFAULT_OR
             # this is the actual intra-stage progress requirement; the
             # publish_for calls immediately before/after the subprocess call
             # are only stage-boundary announcements, not this.
-            run_id = None
-            if _db_stage:
-                row = conn.execute(
-                    "SELECT run_id FROM pipeline_runs WHERE stage = ? "
-                    "ORDER BY started_at DESC LIMIT 1",
-                    (f"orchestrate_{_db_stage}",),
-                ).fetchone()
-                run_id = row["run_id"] if row else None
+            run_id = _lookup_orchestrate_run_id(conn, _db_stage)
             publish_for(conn, RunContext(scanner_state="running", current_stage=_name, run_id=run_id))
 
         log.section(f"stage: {name}")
@@ -256,15 +271,7 @@ def _run_daily_locked(db: str, today: str, orchestrate_timeout: int = DEFAULT_OR
             log.line("  --- stderr (tail) ---")
             log.line(result.stderr_tail)
 
-        db_stage = ORCHESTRATE_STAGE_NAMES.get(name)
-        run_id = None
-        if db_stage:
-            row = conn.execute(
-                "SELECT run_id FROM pipeline_runs WHERE stage = ? "
-                "ORDER BY started_at DESC LIMIT 1",
-                (f"orchestrate_{db_stage}",),
-            ).fetchone()
-            run_id = row["run_id"] if row else None
+        run_id = _lookup_orchestrate_run_id(conn, db_stage_name)
         publish_for(conn, RunContext(scanner_state="running", current_stage=name, run_id=run_id))
 
     _log_data_health(conn, cfg, log, today)
