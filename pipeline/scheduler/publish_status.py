@@ -291,10 +291,24 @@ def publish(status: dict, force: bool = False) -> bool:
     return True
 
 
-def publish_for(conn, context: RunContext, force: bool = False) -> dict:
+def publish_for(conn, context: RunContext, force: bool = False) -> dict | None:
     """Convenience: compute + publish in one call, returns the payload
     whether or not it was actually pushed (callers that just want the
-    numbers -- e.g. a CLI printout -- don't need to check the bool)."""
-    status = compute_status(conn, context)
-    publish(status, force=force)
-    return status
+    numbers -- e.g. a CLI printout -- don't need to check the bool).
+
+    Never raises. This is a side channel, called many times per real
+    scheduler run (before/after every stage) -- a transient failure here
+    (a SQLite lock, a network blip on the git push) must never be able to
+    take down the actual pipeline run calling it. Confirmed the hard way:
+    an unguarded call crashed the whole Aug 9 resume attempt on a
+    "database is locked" before the prices stage even started, publishing
+    nothing had run yet. Returns None on failure so a caller CAN check, but
+    none of the current callers need to -- they're fire-and-forget.
+    """
+    try:
+        status = compute_status(conn, context)
+        publish(status, force=force)
+        return status
+    except Exception as exc:  # noqa: BLE001 -- isolation boundary, must not raise
+        print(f"publish_status: publish_for failed (non-fatal): {exc}", file=sys.stderr)
+        return None

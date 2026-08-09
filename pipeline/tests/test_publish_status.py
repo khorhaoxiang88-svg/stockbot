@@ -68,6 +68,20 @@ def test_meaningfully_changed_with_no_previous_is_always_true():
     assert ps._meaningfully_changed(None, {"scanner_state": "idle"})
 
 
+def test_publish_for_never_raises_when_the_database_is_locked():
+    """The Aug 9 regression: an unguarded compute_status/publish call
+    crashed the whole daily.py run on a transient 'database is locked'
+    before the prices stage even started. publish_for must swallow this."""
+
+    class _LockedConn:
+        def execute(self, *a, **k):
+            import sqlite3
+            raise sqlite3.OperationalError("database is locked")
+
+    result = ps.publish_for(_LockedConn(), ps.RunContext(scanner_state="running", current_stage="prices"))
+    assert result is None
+
+
 def test_compute_status_reports_no_run_yet_when_selection_never_ran(tmp_path):
     conn = _build_db(tmp_path / "test.db")
     status = ps.compute_status(conn, ps.RunContext(scanner_state="idle"))
