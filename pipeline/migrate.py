@@ -113,6 +113,15 @@ def connect(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     conn.isolation_level = None  # we manage BEGIN/COMMIT ourselves
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # WAL: a reader (this session's status-heartbeat, a manual inspection
+    # query) no longer blocks on -- or gets blocked by -- a concurrent
+    # writer (an orchestrate child mid-batch). Confirmed needed: even a 30s
+    # busy timeout still hit "database is locked" under the daily.py
+    # heartbeat + orchestrate write pattern on the default rollback-journal
+    # mode. Standard, safe for a single-machine app; only side effect is
+    # -wal/-shm sidecar files next to stockbot.db, both already covered by
+    # data/ being gitignored wholesale.
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations ("
         "  version TEXT PRIMARY KEY,"
