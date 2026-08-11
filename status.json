@@ -1,13 +1,13 @@
 {
   "current_stage": "form4",
-  "generated_at": "2026-08-11T00:00:08Z",
-  "last_activity_at": "2026-08-11T00:00:08Z",
+  "generated_at": "2026-08-11T00:01:12Z",
+  "last_activity_at": "2026-08-11T00:01:12Z",
   "last_success_at": "2026-08-09T23:03:04Z",
   "latest_score_date": "2026-08-07",
   "latest_selection_status": "zero_candidates",
   "next_scheduled_run": "2026-08-11T23:00:00Z",
   "progress": {
-    "completed": 358,
+    "completed": 365,
     "total": 385
   },
   "ranked_count": 77,
