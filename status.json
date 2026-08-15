@@ -1,13 +1,13 @@
 {
   "current_stage": "xbrl",
-  "generated_at": "2026-08-15T00:40:33Z",
-  "last_activity_at": "2026-08-15T00:40:33Z",
+  "generated_at": "2026-08-15T00:41:38Z",
+  "last_activity_at": "2026-08-15T00:41:38Z",
   "last_success_at": "2026-08-12T00:47:12Z",
   "latest_score_date": "2026-08-13",
   "latest_selection_status": "zero_candidates",
   "next_scheduled_run": "2026-08-15T23:00:00Z",
   "progress": {
-    "completed": 628,
+    "completed": 672,
     "total": 385
   },
   "ranked_count": 77,
