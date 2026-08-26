@@ -1,14 +1,14 @@
 {
-  "current_stage": "selection",
-  "generated_at": "2026-08-26T01:38:42Z",
-  "last_activity_at": "2026-08-26T01:38:42Z",
+  "current_stage": null,
+  "generated_at": "2026-08-26T01:38:48Z",
+  "last_activity_at": "2026-08-26T01:38:48Z",
   "last_success_at": "2026-08-26T01:38:39Z",
   "latest_score_date": "2026-08-25",
   "latest_selection_status": "blocked_stale_source",
   "next_scheduled_run": "2026-08-26T23:00:00Z",
   "progress": null,
   "ranked_count": 78,
-  "scanner_state": "running",
+  "scanner_state": "succeeded",
   "schema_version": 1,
   "selected_count": 0
 }
