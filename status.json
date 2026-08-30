@@ -1,13 +1,13 @@
 {
   "current_stage": "prices",
-  "generated_at": "2026-08-30T23:03:25Z",
-  "last_activity_at": "2026-08-30T23:03:25Z",
+  "generated_at": "2026-08-30T23:03:50Z",
+  "last_activity_at": "2026-08-30T23:03:50Z",
   "last_success_at": "2026-08-30T02:40:19Z",
   "latest_score_date": "2026-08-28",
   "latest_selection_status": "blocked_stale_source",
   "next_scheduled_run": "2026-08-31T23:00:00Z",
   "progress": {
-    "completed": 610,
+    "completed": 700,
     "total": 385
   },
   "ranked_count": 77,
