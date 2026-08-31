@@ -1,15 +1,12 @@
 {
-  "current_stage": "prices",
-  "generated_at": "2026-08-31T23:03:30Z",
-  "last_activity_at": "2026-08-31T23:03:30Z",
+  "current_stage": "form4",
+  "generated_at": "2026-08-31T23:03:34Z",
+  "last_activity_at": "2026-08-31T23:03:34Z",
   "last_success_at": "2026-08-31T01:34:49Z",
   "latest_score_date": "2026-08-28",
   "latest_selection_status": "blocked_stale_source",
   "next_scheduled_run": "2026-09-01T00:00:00Z",
-  "progress": {
-    "completed": 700,
-    "total": 385
-  },
+  "progress": null,
   "ranked_count": 77,
   "scanner_state": "running",
   "schema_version": 1,
