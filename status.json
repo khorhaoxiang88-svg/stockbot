@@ -1,13 +1,13 @@
 {
   "current_stage": "riskflags",
-  "generated_at": "2026-09-01T01:18:57Z",
-  "last_activity_at": "2026-09-01T01:18:57Z",
+  "generated_at": "2026-09-01T01:20:02Z",
+  "last_activity_at": "2026-09-01T01:20:02Z",
   "last_success_at": "2026-08-31T01:34:49Z",
   "latest_score_date": "2026-08-31",
   "latest_selection_status": "blocked_stale_source",
   "next_scheduled_run": "2026-09-01T23:00:00Z",
   "progress": {
-    "completed": 398,
+    "completed": 621,
     "total": 385
   },
   "ranked_count": 77,
