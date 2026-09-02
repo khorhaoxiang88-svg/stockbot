@@ -1,9 +1,9 @@
 {
   "current_stage": "scoring",
-  "generated_at": "2026-09-02T00:44:04Z",
-  "last_activity_at": "2026-09-02T00:44:04Z",
+  "generated_at": "2026-09-02T00:44:18Z",
+  "last_activity_at": "2026-09-02T00:44:18Z",
   "last_success_at": "2026-09-01T01:20:34Z",
-  "latest_score_date": "2026-08-31",
+  "latest_score_date": "2026-09-01",
   "latest_selection_status": "blocked_stale_source",
   "next_scheduled_run": "2026-09-02T23:00:00Z",
   "progress": null,
