@@ -1,7 +1,7 @@
 {
-  "current_stage": "scoring",
-  "generated_at": "2026-09-05T02:22:41Z",
-  "last_activity_at": "2026-09-05T02:22:41Z",
+  "current_stage": "riskflags",
+  "generated_at": "2026-09-05T02:22:45Z",
+  "last_activity_at": "2026-09-05T02:22:45Z",
   "last_success_at": "2026-09-03T01:10:16Z",
   "latest_score_date": "2026-09-04",
   "latest_selection_status": "blocked_stale_source",
